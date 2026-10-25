@@ -20,9 +20,9 @@ from .orchestrator import USER, Message, Orchestrator
 from .prompts import ROLE_TITLES
 
 COLORS = {
-    "architect": "magenta", "manager": "yellow", "coder1": "cyan", "coder2": "green",
-    "coder3": "bright_blue", "reviewer": "red", "tester": "dark_orange", USER: "bold white",
-    "system": "grey50",
+    "architect": "#c678dd", "manager": "#e5c07b", "coder1": "#56b6c2", "coder2": "#98c379",
+    "coder3": "#61afef", "reviewer": "#e06c75", "tester": "#d19a66", USER: "bold #ffffff",
+    "system": "#808080",
 }
 SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
@@ -59,6 +59,7 @@ class Item(Static):
 
 class LogPanel(VerticalScroll):
     can_focus = True
+    ALLOW_MAXIMIZE = True
 
     def __init__(self, key: str, title: str, index: int):
         super().__init__(id=f"p-{key}", classes="panel")
@@ -161,7 +162,7 @@ class FeedPanel(LogPanel):
     def message(self, msg: Message):
         t = Text(f"{ago(msg.ts)} ", style="grey42")
         t.append(msg.sender, style=COLORS.get(msg.sender, "white"))
-        t.append(" → ", style="dim")
+        t.append(" → " if msg.to else " · ", style="dim")
         for i, n in enumerate(msg.to):
             t.append(("" if i == 0 else ", ") + n, style=COLORS.get(n, "white"))
         body = msg.content.strip()
@@ -178,6 +179,7 @@ class FeedPanel(LogPanel):
 
 
 class GitPanel(Static, can_focus=True):
+    ALLOW_MAXIMIZE = True
     def __init__(self, index: int):
         super().__init__(id="p-git", classes="panel")
         self.key = "git"
@@ -267,6 +269,7 @@ class AgoraApp(App):
     #p-git { overflow-y: auto; }
     Item { margin-bottom: 1; }
     Item.incoming { margin-bottom: 0; }
+    #p-feed Item { margin-bottom: 0; }
     Item.hl { background: $boost; }
     #status { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
     #prompt { border: tall $accent; }
@@ -305,7 +308,7 @@ class AgoraApp(App):
 
     # ---------------------------------------------------------- lifecycle
     def on_mount(self):
-        self.orch = Orchestrator(self.cfg, self.repo, self.on_event)
+        self.orch = Orchestrator(self.cfg, self.repo, self.handle_orch_event)
         for name, p in self.panels.items():
             p.set_meta(model=self.cfg.agents[name].model)
         self.apply_layout()
@@ -345,7 +348,7 @@ class AgoraApp(App):
             f" · F5 пауза F8 стоп ctrl+b ветки")
 
     # ------------------------------------------------------ orchestrator
-    def on_event(self, kind: str, **d):
+    def handle_orch_event(self, kind: str, **d):
         if kind == "message":
             msg: Message = d["msg"]
             self.feed.message(msg)
