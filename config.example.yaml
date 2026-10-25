@@ -1,0 +1,66 @@
+# Agora — конфигурация.
+# Скопируй в ~/.config/agora/config.yaml или в ./agora.yaml в корне репозитория.
+# ${VAR} подставляется из переменных окружения.
+# ID моделей меняются часто — сверяй с документацией провайдера.
+
+language: ru            # на каком языке общаются агенты
+default_target: manager # кому уходит сообщение без @упоминания
+budget: 30              # макс. ходов агентов на одну твою задачу (защита от бесконечных споров)
+max_history: 40         # сколько последних сообщений агент держит в контексте
+complex_mode: false     # true = включён третий кодер (переключается /complex)
+
+providers:
+  anthropic:
+    type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key: ${OPENAI_API_KEY}
+  deepseek:
+    type: openai
+    base_url: https://api.deepseek.com/v1
+    api_key: ${DEEPSEEK_API_KEY}
+  qwen:                 # Alibaba DashScope, OpenAI-совместимый режим
+    type: openai
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    api_key: ${DASHSCOPE_API_KEY}
+  minimax:
+    type: openai
+    base_url: https://api.minimax.io/v1
+    api_key: ${MINIMAX_API_KEY}
+  openrouter:           # один ключ — сотни моделей
+    type: openai
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+  ollama:               # локально
+    type: openai
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+  lmstudio:
+    type: openai
+    base_url: http://localhost:1234/v1
+    api_key: lm-studio
+  mock:                 # офлайн-заглушка для проверки интерфейса
+    type: mock
+
+# model: "<провайдер>/<id модели>"
+agents:
+  architect:
+    model: anthropic/claude-opus-4-1
+    temperature: 0.4
+  manager:
+    model: openai/gpt-5-mini
+    observe_all: true   # видит всю переписку как контекст (не тратит ход)
+  coder1:
+    model: deepseek/deepseek-chat
+  coder2:
+    model: qwen/qwen3-coder-plus
+  coder3:
+    model: ollama/qwen2.5-coder:14b
+  reviewer:
+    model: anthropic/claude-sonnet-4-5
+    temperature: 0.2
+  tester:
+    model: minimax/MiniMax-M2
+  # Любой агент: max_tokens, temperature, extra_prompt (дописывается к системному промпту)

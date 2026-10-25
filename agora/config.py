@@ -1,0 +1,101 @@
+"""Загрузка конфигурации: YAML + подстановка ${ENV}."""
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+ROLES = ["architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester"]
+
+_ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _expand(value):
+    if isinstance(value, str):
+        return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: _expand(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    return value
+
+
+@dataclass
+class AgentConfig:
+    name: str
+    model: str = "mock/mock"
+    temperature: float = 0.5
+    max_tokens: int = 4096
+    observe_all: bool = False
+    extra_prompt: str = ""
+
+    @property
+    def provider(self) -> str:
+        return self.model.split("/", 1)[0]
+
+    @property
+    def model_id(self) -> str:
+        return self.model.split("/", 1)[1] if "/" in self.model else self.model
+
+
+@dataclass
+class Config:
+    language: str = "ru"
+    default_target: str = "manager"
+    budget: int = 30
+    max_history: int = 40
+    complex_mode: bool = False
+    providers: dict = field(default_factory=lambda: {"mock": {"type": "mock"}})
+    agents: dict[str, AgentConfig] = field(default_factory=dict)
+    source: str = "defaults"
+
+
+CANDIDATES = [
+    Path("agora.yaml"),
+    Path(".agora/config.yaml"),
+    Path.home() / ".config" / "agora" / "config.yaml",
+]
+
+
+def load_config(path: str | None = None, force_mock: bool = False) -> Config:
+    raw: dict = {}
+    source = "defaults (mock)"
+    paths = [Path(path)] if path else CANDIDATES
+    for p in paths:
+        if p.exists():
+            raw = _expand(yaml.safe_load(p.read_text(encoding="utf-8")) or {})
+            source = str(p)
+            break
+    else:
+        if path:
+            raise FileNotFoundError(path)
+
+    cfg = Config(
+        language=raw.get("language", "ru"),
+        default_target=raw.get("default_target", "manager"),
+        budget=int(raw.get("budget", 30)),
+        max_history=int(raw.get("max_history", 40)),
+        complex_mode=bool(raw.get("complex_mode", False)),
+        providers=raw.get("providers") or {"mock": {"type": "mock"}},
+        source=source,
+    )
+    cfg.providers.setdefault("mock", {"type": "mock"})
+
+    agents_raw = raw.get("agents") or {}
+    for role in ROLES:
+        a = agents_raw.get(role) or {}
+        ac = AgentConfig(
+            name=role,
+            model=a.get("model", "mock/mock"),
+            temperature=float(a.get("temperature", 0.5)),
+            max_tokens=int(a.get("max_tokens", 4096)),
+            observe_all=bool(a.get("observe_all", role == "manager")),
+            extra_prompt=a.get("extra_prompt", ""),
+        )
+        if force_mock:
+            ac.model = f"mock/{role}"
+        cfg.agents[role] = ac
+    return cfg

@@ -1,0 +1,23 @@
+[project]
+name = "agora"
+version = "0.1.0"
+description = "Мультиагентная среда разработки в терминале: архитектор, менеджер, кодеры, ревьюер, тестировщик — на любых моделях"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.80",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+agora = "agora.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agora*"]
+
+[tool.setuptools.package-data]
+agora = ["*.tcss"]
