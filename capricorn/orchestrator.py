@@ -137,7 +137,7 @@ class Agent:
             self.pending = batch + self.pending   # можно повторить через /retry
             self.context = ctx + self.context
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text="", to=[])
-            self.orch.emit("system", text=f"⚠ {self.name}: {type(e).__name__}: {e}", level="error")
+            self.orch.emit("system", text=f"▲ {self.name}: {type(e).__name__}: {e}", level="error")
             self.set_status("error")
             return False
 
@@ -253,7 +253,7 @@ class Orchestrator:
         if not self._budget_warned:
             self._budget_warned = True
             self.emit("system", level="warn",
-                      text="⏸ Бюджет ходов исчерпан. /continue [N] — продолжить, или напиши новую задачу.")
+                      text="‖ Бюджет ходов исчерпан. /continue [N] — продолжить, или напиши новую задачу.")
 
     def add_budget(self, n: int):
         self.budget += n

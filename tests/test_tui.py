@@ -101,4 +101,4 @@ async def test_commands(ui):
 async def test_command_errors_are_shown_not_raised(ui, line, needle):
     app, pilot = ui
     await submit(pilot, line)
-    assert any(needle in t and t.startswith("⚠") for t in feed_texts(app)), feed_texts(app)[-1]
+    assert any(needle in t and t.startswith("▲") for t in feed_texts(app)), feed_texts(app)[-1]

@@ -32,7 +32,7 @@ COLORS = {
     "system": STEEL,
 }
 CODE_THEME = "fruity"
-SPIN = "◢◣◤◥"
+SPIN = "░▒▓█▓▒"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
 
@@ -73,7 +73,7 @@ class LogPanel(VerticalScroll):
         super().__init__(id=f"p-{key}", classes="panel")
         self.key = key
         self.index = index
-        self.border_title = f"◢ {index:02d} // {title.upper()}"
+        self.border_title = f"▓ {index:02d} // {title.upper()}"
 
     def _at_bottom(self) -> bool:
         return self.scroll_y >= self.max_scroll_y - 3
@@ -120,7 +120,7 @@ class AgentPanel(LogPanel):
         self._render_subtitle()
 
     def _render_subtitle(self):
-        icon = {"idle": "▫", "error": "✖", "stopped": "■", "waiting budget": "‖"}.get(
+        icon = {"idle": "▫", "error": "×", "stopped": "■", "waiting budget": "‖"}.get(
             self.status, SPIN[self._spin % len(SPIN)])
         self.set_class(self.status in ("thinking", "typing"), "active")
         self.set_class(self.status == "error", "failed")
@@ -195,27 +195,27 @@ class GitPanel(Static, can_focus=True):
     def __init__(self, index: int):
         super().__init__(id="p-git", classes="panel")
         self.key = "git"
-        self.border_title = f"◢ {index:02d} // GIT"
+        self.border_title = f"▓ {index:02d} // GIT"
 
     @staticmethod
     def _section(t: Text, title: str):
-        t.append(f"\n▚ {title} ", style=f"bold {RED}")
+        t.append(f"\n▒ {title} ", style=f"bold {RED}")
         t.append("─" * 24 + "\n", style=RED_DIM)
 
     def show(self, s: GitSnapshot):
         if not s.ok:
-            self.update(Text(f"✖ {s.error}", style=RED))
+            self.update(Text(f"× {s.error}", style=RED))
             return
-        self.border_title = f"◢ 01 // GIT ┃ {s.branch}"
+        self.border_title = f"▓ 01 // GIT ┃ {s.branch}"
         t = Text()
-        t.append(f"⎇ {s.branch}", style=f"bold {BONE} on {RED_DEEP}")
+        t.append(f"» {s.branch}", style=f"bold {BONE} on {RED_DEEP}")
         if s.upstream:
-            t.append(f"  ⇢ {s.upstream}", style=STEEL)
+            t.append(f"  → {s.upstream}", style=STEEL)
             t.append(f"  ↑{s.ahead} ↓{s.behind}",
                      style=COLORS["tester"] if s.ahead or s.behind else STEEL)
         t.append("\n")
         t.append(f"●{s.staged} индекс  ", style=COLORS["coder1"])
-        t.append(f"✎{s.modified} изм.  ", style=COLORS["reviewer"])
+        t.append(f"±{s.modified} изм.  ", style=COLORS["reviewer"])
         t.append(f"+{s.untracked} новых", style=COLORS["coder2"])
         self._section(t, "КОММИТЫ")
         for h, when, author, subj in s.commits[:10]:
@@ -230,7 +230,7 @@ class GitPanel(Static, can_focus=True):
             t.append("нет открытых / gh|glab не настроен\n", style=STEEL)
         self._section(t, "ВЕТКИ · CTRL+B")
         for b in s.branches[:12]:
-            t.append(("▶ " + b) if b == s.branch else b,
+            t.append(("► " + b) if b == s.branch else b,
                      style=f"bold {RED}" if b == s.branch else COLORS["coder1"])
             t.append("   ")
         self.update(t)
@@ -252,7 +252,7 @@ class BranchPicker(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(" ◢ ПЕРЕКЛЮЧИТЬ ВЕТКУ ┃ enter — выбрать · esc — отмена")
+            yield Label(" ▓ ПЕРЕКЛЮЧИТЬ ВЕТКУ ┃ enter — выбрать · esc — отмена")
             yield OptionList(*[("● " if b == self.current else "  ") + b for b in self.branches])
 
     @on(OptionList.OptionSelected)
@@ -282,7 +282,7 @@ class PromptInput(Input):
 
 # ---------------------------------------------------------------------- app
 
-BANNER = "◢◤ CAPRICORN ┃ MULTI-AGENT DEVELOPMENT ENVIRONMENT ┃ ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚"
+BANNER = "▓▒░ CAPRICORN ┃ MULTI-AGENT DEVELOPMENT ENVIRONMENT ┃ ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒"
 
 CAPRICORN_THEME = Theme(
     name="capricorn",
@@ -360,7 +360,7 @@ class CapricornApp(App):
             p.set_meta(model=self.cfg.agents[name].model)
         self.apply_layout()
         self.orch.start()
-        self.feed.system(f"◢ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
+        self.feed.system(f"▓ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
         self.feed.system("/help — команды. Напиши задачу — менеджер раздаст её команде.")
         self.refresh_git()
         self.set_interval(5, self.refresh_git)
@@ -389,10 +389,10 @@ class CapricornApp(App):
         if not o.running.is_set():
             state = f"[bold #050506 on #f5d300] ‖ ПАУЗА [/]"
         elif busy:
-            state = f"[bold #050506 on {RED}] ▶ LIVE [/] [{RED}]{' '.join(busy)}[/]"
+            state = f"[bold #050506 on {RED}] ► LIVE [/] [{RED}]{' '.join(busy)}[/]"
         else:
             state = f"[{STEEL}]▫ STANDBY[/]"
-        att = f" ┃ 📎{len(o.attachments)}" if o.attachments else ""
+        att = f" ┃ ФАЙЛЫ {len(o.attachments)}" if o.attachments else ""
         mode = "COMPLEX ×3" if self.cfg.complex_mode else "STANDARD"
         sep = f" [{RED_DIM}]┃[/] "
         self.query_one("#status", Static).update(
@@ -433,9 +433,9 @@ class CapricornApp(App):
             try:
                 self.command(text)
             except IndexError:
-                self.feed.system(f"⚠ не хватает аргументов: {text}. /help", "error")
+                self.feed.system(f"▲ не хватает аргументов: {text}. /help", "error")
             except Exception as e:  # noqa: BLE001
-                self.feed.system(f"⚠ {e}", "error")
+                self.feed.system(f"▲ {e}", "error")
         else:
             self.orch.user_says(text)
 
@@ -451,9 +451,9 @@ class CapricornApp(App):
         if cmd in ("help", "h", "?"):
             self.feed.system(HELP, markup=True)
         elif cmd == "pause":
-            o.pause(); self.feed.system("⏸ пауза — текущие ответы допишутся, новые ходы не начнутся", "warn")
+            o.pause(); self.feed.system("‖ пауза — текущие ответы допишутся, новые ходы не начнутся", "warn")
         elif cmd == "resume":
-            o.resume(); self.feed.system("▶ продолжаем")
+            o.resume(); self.feed.system("► продолжаем")
         elif cmd == "stop":
             self.action_stop()
         elif cmd == "continue":
@@ -477,7 +477,7 @@ class CapricornApp(App):
             o.reset(self._agent(args[0]) if args else None)
             self.feed.system(f"память очищена: {args[0] if args else 'все'}")
         elif cmd == "attach":
-            p = o.attach(args[0]); self.feed.system(f"📎 приложу к следующему сообщению: {p}")
+            p = o.attach(args[0]); self.feed.system(f"+ приложу к следующему сообщению: {p}")
         elif cmd == "branch":
             self.switch_branch(args[0])
         elif cmd == "zoom":
@@ -507,7 +507,7 @@ class CapricornApp(App):
     @work(group="git")
     async def switch_branch(self, branch: str):
         ok, out = await self.orch.git.switch(branch)
-        self.feed.system(("✓ " if ok else "⚠ ") + out, "info" if ok else "error")
+        self.feed.system(("► " if ok else "▲ ") + out, "info" if ok else "error")
         self.refresh_git()
 
     def zoom(self, key: str):

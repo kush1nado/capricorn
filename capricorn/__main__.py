@@ -5,6 +5,7 @@ import argparse
 import os
 
 from .config import load_config
+from .terminal import prepare_terminal
 
 
 def main():
@@ -19,6 +20,7 @@ def main():
     if args.complex:
         cfg.complex_mode = True
 
+    prepare_terminal()
     from .tui import CapricornApp
     CapricornApp(cfg, os.path.abspath(args.repo)).run()
 

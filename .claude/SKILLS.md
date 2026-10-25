@@ -67,10 +67,22 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 2. Новый протокол — класс `Provider.stream` (отдаёт `str`-чанки, в конце `{"usage": …}`),
    регистрация в `build_providers`, тесты через `http_mock`.
 
+## Запустить приложение для владельца
+
+- В отдельном окне: `Capricorn.cmd` в корне (двойной клик или `Start-Process`).
+- **Claude Code выставляет `NO_COLOR=1` своим командам.** Окно, запущенное из инструментов, наследует
+  его, и Textual рисует всё серым. Перед `Start-Process` делай `Remove-Item Env:NO_COLOR`
+  (`Capricorn.cmd` сбрасывает её сам).
+- Не снимай скриншоты экрана владельца: окно может не выйти на передний план, и в кадр попадёт чужое.
+  Цвета проверяй через `app.console.color_system` и `app.no_color`.
+
 ## Ловушки окружения (Windows)
 
 - Вывод pytest с кириллицей превращается в кракозябры: запускай с `PYTHONUTF8=1`.
 - Shell-скрипты (`.githooks/*`) обязаны быть с LF, это закреплено в `.gitattributes`. С CRLF `sh` падает.
+- Классическая консоль (conhost) и Consolas: многих символов нет, Textual без подсказки выбирает 256 цветов.
+  Это закрывают `capricorn/terminal.py` (truecolor) и тест на набор глифов.
+- `Path.write_text` на Windows пишет CRLF. Для LF-файлов используй `open(..., newline="")`.
 - Подсказки в `capricorn --help` в некоторых консолях выводятся в неверной кодировке. Это консоль, не баг.
 - Хук запускает тесты с `GIT_INDEX_FILE`/`GIT_AUTHOR_*` в окружении. `conftest.py` вычищает все `GIT_*`.
   Новый тест с git-подпроцессами должен идти через фикстуры, а не мимо них.

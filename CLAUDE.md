@@ -41,3 +41,5 @@ git config core.hooksPath .githooks              # pre-commit: версия + т
 - ID моделей в `config.example.yaml` сверяй с документацией провайдера, по памяти не пиши.
 - Не коммить `capricorn.yaml`, ключи и `.venv/`.
 - Новая slash-команда или опция конфига отражается в `HELP` (tui.py) и в README.
+- Новые символы в интерфейсе — только из набора, который есть в Consolas (`CONSOLAS_SAFE` в
+  `tests/test_terminal.py`). Иначе в классической консоли Windows будут квадраты.
