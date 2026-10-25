@@ -1,4 +1,4 @@
-"""agora [--repo PATH] [--config FILE] [--mock] [--complex]"""
+"""capricorn [--repo PATH] [--config FILE] [--mock] [--complex]"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from .config import load_config
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="agora", description="Мультиагентная среда разработки в терминале")
+    ap = argparse.ArgumentParser(prog="capricorn", description="Мультиагентная среда разработки в терминале")
     ap.add_argument("--repo", default=os.getcwd(), help="путь к git-репозиторию (по умолч. текущая папка)")
     ap.add_argument("--config", help="путь к YAML-конфигу")
     ap.add_argument("--mock", action="store_true", help="все агенты на офлайн-заглушке (проверка UI)")
@@ -19,8 +19,8 @@ def main():
     if args.complex:
         cfg.complex_mode = True
 
-    from .tui import AgoraApp
-    AgoraApp(cfg, os.path.abspath(args.repo)).run()
+    from .tui import CapricornApp
+    CapricornApp(cfg, os.path.abspath(args.repo)).run()
 
 
 if __name__ == "__main__":

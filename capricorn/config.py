@@ -54,9 +54,9 @@ class Config:
 
 
 CANDIDATES = [
-    Path("agora.yaml"),
-    Path(".agora/config.yaml"),
-    Path.home() / ".config" / "agora" / "config.yaml",
+    Path("capricorn.yaml"),
+    Path(".capricorn/config.yaml"),
+    Path.home() / ".config" / "capricorn" / "config.yaml",
 ]
 
 

@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import Input, Label, OptionList, Static
 
 from .config import Config
@@ -19,17 +20,24 @@ from .gitinfo import GitSnapshot
 from .orchestrator import USER, Message, Orchestrator
 from .prompts import ROLE_TITLES
 
+# Палитра: корпоративный киберпанк — чёрный, кроваво-красный, сталь, неоновые акценты
+RED = "#ff1a3c"        # основной
+RED_DIM = "#5c0a16"    # рамки
+RED_DEEP = "#2a0309"   # подложки
+STEEL = "#6e7681"      # служебный текст
+BONE = "#e9e4dc"       # основной текст
 COLORS = {
-    "architect": "#c678dd", "manager": "#e5c07b", "coder1": "#56b6c2", "coder2": "#98c379",
-    "coder3": "#61afef", "reviewer": "#e06c75", "tester": "#d19a66", USER: "bold #ffffff",
-    "system": "#808080",
+    "architect": RED, "manager": BONE, "coder1": "#00e5ff", "coder2": "#ff2e88",
+    "coder3": "#b26bff", "reviewer": "#ff7a00", "tester": "#f5d300", USER: f"bold {BONE}",
+    "system": STEEL,
 }
-SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+CODE_THEME = "fruity"
+SPIN = "◢◣◤◥"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
 
 HELP = """\
-[b]Ввод[/b]: текст → менеджеру; [cyan]@architect @reviewer текст[/] → адресно; @coders, @all.
+[b]Ввод[/b]: текст → менеджеру; [#00e5ff]@architect @reviewer текст[/] → адресно; @coders, @all.
 [b]Команды[/b]:
   /pause /resume /stop          — пауза, продолжить, прервать всех
   /continue [N]                 — добавить N ходов (по умолч. 15)
@@ -65,7 +73,7 @@ class LogPanel(VerticalScroll):
         super().__init__(id=f"p-{key}", classes="panel")
         self.key = key
         self.index = index
-        self.border_title = f"{index} {title}"
+        self.border_title = f"◢ {index:02d} // {title.upper()}"
 
     def _at_bottom(self) -> bool:
         return self.scroll_y >= self.max_scroll_y - 3
@@ -112,9 +120,12 @@ class AgentPanel(LogPanel):
         self._render_subtitle()
 
     def _render_subtitle(self):
-        icon = {"idle": "○", "error": "✗", "stopped": "■", "waiting budget": "⏸"}.get(
+        icon = {"idle": "▫", "error": "✖", "stopped": "■", "waiting budget": "‖"}.get(
             self.status, SPIN[self._spin % len(SPIN)])
-        self.border_subtitle = f"{icon} {self.status} · {self.model} · {k(self.tok[0])}↑ {k(self.tok[1])}↓"
+        self.set_class(self.status in ("thinking", "typing"), "active")
+        self.set_class(self.status == "error", "failed")
+        self.border_subtitle = (f"{icon} {self.status.upper()} ┃ {self.model} ┃ "
+                                f"{k(self.tok[0])}↑ {k(self.tok[1])}↓")
 
     def _tick(self):
         if self.status in ("thinking", "typing"):
@@ -126,9 +137,9 @@ class AgentPanel(LogPanel):
         self.dirty.clear()
 
     def _body(self, text: str, streaming=False, to: list[str] | None = None):
-        parts = [Markdown(text + (" ▌" if streaming else ""), code_theme="monokai")]
+        parts = [Markdown(text + (" █" if streaming else ""), code_theme=CODE_THEME)]
         if to:
-            t = Text("→ ", style="dim")
+            t = Text("▸▸ ", style=RED_DIM)
             for i, n in enumerate(to):
                 t.append(("" if i == 0 else ", ") + n, style=COLORS.get(n, "white"))
             parts.append(t)
@@ -136,13 +147,13 @@ class AgentPanel(LogPanel):
 
     def incoming(self, msg: Message):
         first = msg.content.strip().splitlines()[0] if msg.content.strip() else ""
-        t = Text("← ", style="dim")
+        t = Text("◂◂ ", style=RED_DIM)
         t.append(msg.sender, style=COLORS.get(msg.sender, "white"))
-        t.append(f": {first[:160]}", style="dim italic")
+        t.append(f": {first[:160]}", style=f"italic {STEEL}")
         self.add(t, classes="incoming")
 
     def stream_start(self, mid: int):
-        self.streams[mid] = (self.add(Text("…", style="dim"), classes="own"), "")
+        self.streams[mid] = (self.add(Text("▒▒▒", style=RED_DIM), classes="own"), "")
 
     def stream_chunk(self, mid: int, chunk: str):
         item, text = self.streams[mid]
@@ -160,58 +171,68 @@ class AgentPanel(LogPanel):
 
 class FeedPanel(LogPanel):
     def message(self, msg: Message):
-        t = Text(f"{ago(msg.ts)} ", style="grey42")
+        t = Text(f"{ago(msg.ts)} ", style="#4a4f57")
         t.append(msg.sender, style=COLORS.get(msg.sender, "white"))
-        t.append(" → " if msg.to else " · ", style="dim")
+        t.append(" ▸ " if msg.to else " · ", style=STEEL)
         for i, n in enumerate(msg.to):
             t.append(("" if i == 0 else ", ") + n, style=COLORS.get(n, "white"))
         body = msg.content.strip()
         if msg.sender == USER or USER in msg.to:
-            t.append("\n" + body, style="bold" if USER in msg.to else "")
+            t.append("\n" + body, style=f"bold {BONE}" if USER in msg.to else BONE)
         else:
             first = body.splitlines()[0] if body else ""
-            t.append(f"  {first[:120]}", style="grey70")
+            t.append(f"  {first[:120]}", style="#a8a29a")
         self.add(t, classes="hl" if USER in msg.to else "")
 
     def system(self, text: str, level: str = "info", markup: bool = False):
-        style = {"error": "red", "warn": "yellow"}.get(level, "grey62")
+        style = {"error": f"bold {RED}", "warn": "#f5d300"}.get(level, STEEL)
         self.add(Text.from_markup(text, style=style) if markup else Text(text, style=style))
 
 
 class GitPanel(Static, can_focus=True):
     ALLOW_MAXIMIZE = True
+
     def __init__(self, index: int):
         super().__init__(id="p-git", classes="panel")
         self.key = "git"
-        self.border_title = f"{index} Git"
+        self.border_title = f"◢ {index:02d} // GIT"
+
+    @staticmethod
+    def _section(t: Text, title: str):
+        t.append(f"\n▚ {title} ", style=f"bold {RED}")
+        t.append("─" * 24 + "\n", style=RED_DIM)
 
     def show(self, s: GitSnapshot):
         if not s.ok:
-            self.update(Text(s.error, style="red"))
+            self.update(Text(f"✖ {s.error}", style=RED))
             return
-        self.border_title = f"1 Git ·  {s.branch}"
+        self.border_title = f"◢ 01 // GIT ┃ {s.branch}"
         t = Text()
-        t.append(f" {s.branch}", style="bold green")
+        t.append(f"⎇ {s.branch}", style=f"bold {BONE} on {RED_DEEP}")
         if s.upstream:
-            t.append(f"  ⇢ {s.upstream}", style="dim")
-            t.append(f"  ↑{s.ahead} ↓{s.behind}", style="yellow" if s.ahead or s.behind else "dim")
+            t.append(f"  ⇢ {s.upstream}", style=STEEL)
+            t.append(f"  ↑{s.ahead} ↓{s.behind}",
+                     style=COLORS["tester"] if s.ahead or s.behind else STEEL)
         t.append("\n")
-        t.append(f"●{s.staged} индекс  ", style="green")
-        t.append(f"✎{s.modified} изм.  ", style="yellow")
-        t.append(f"+{s.untracked} новых\n", style="cyan")
-        t.append("─ коммиты ─\n", style="grey42")
+        t.append(f"●{s.staged} индекс  ", style=COLORS["coder1"])
+        t.append(f"✎{s.modified} изм.  ", style=COLORS["reviewer"])
+        t.append(f"+{s.untracked} новых", style=COLORS["coder2"])
+        self._section(t, "КОММИТЫ")
         for h, when, author, subj in s.commits[:10]:
-            t.append(h, style="yellow")
-            t.append(f" {subj[:60]}", style="white")
-            t.append(f"  {when}, {author}\n", style="grey50")
-        t.append(f"─ MR/PR {('(' + s.mr_source + ')') if s.mr_source else ''} ─\n", style="grey42")
+            t.append(h, style=RED)
+            t.append(f" {subj[:60]}", style=BONE)
+            t.append(f"  {when}, {author}\n", style=STEEL)
+        self._section(t, f"MR/PR{(' · ' + s.mr_source) if s.mr_source else ''}")
         if s.mrs:
             for m in s.mrs:
-                t.append(m[:90] + "\n", style="magenta")
+                t.append(m[:90] + "\n", style=COLORS["coder3"])
         else:
-            t.append("нет открытых / gh|glab не настроен\n", style="grey50")
-        t.append("─ ветки (ctrl+b) ─\n", style="grey42")
-        t.append("  ".join(("*" + b) if b == s.branch else b for b in s.branches[:12]), style="cyan")
+            t.append("нет открытых / gh|glab не настроен\n", style=STEEL)
+        self._section(t, "ВЕТКИ · CTRL+B")
+        for b in s.branches[:12]:
+            t.append(("▶ " + b) if b == s.branch else b,
+                     style=f"bold {RED}" if b == s.branch else COLORS["coder1"])
+            t.append("   ")
         self.update(t)
 
 
@@ -219,7 +240,9 @@ class BranchPicker(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "dismiss(None)", "Отмена")]
     DEFAULT_CSS = """
     BranchPicker { align: center middle; }
-    BranchPicker > Vertical { width: 60; height: 24; border: thick $accent; background: $surface; }
+    BranchPicker > Vertical { width: 60; height: 24; border: heavy $primary; background: $surface; }
+    BranchPicker Label { background: $primary; color: $background; width: 100%; text-style: bold; }
+    BranchPicker OptionList { border: none; background: $surface; }
     """
 
     def __init__(self, branches: list[str], current: str):
@@ -229,7 +252,7 @@ class BranchPicker(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(" Переключить ветку (enter — выбрать, esc — отмена)")
+            yield Label(" ◢ ПЕРЕКЛЮЧИТЬ ВЕТКУ ┃ enter — выбрать · esc — отмена")
             yield OptionList(*[("● " if b == self.current else "  ") + b for b in self.branches])
 
     @on(OptionList.OptionSelected)
@@ -259,20 +282,41 @@ class PromptInput(Input):
 
 # ---------------------------------------------------------------------- app
 
-class AgoraApp(App):
-    TITLE = "Agora"
+BANNER = "◢◤ CAPRICORN ┃ MULTI-AGENT DEVELOPMENT ENVIRONMENT ┃ ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚"
+
+CAPRICORN_THEME = Theme(
+    name="capricorn",
+    primary=RED, secondary="#b3122e", accent=RED, warning="#f5d300", error=RED,
+    success="#00e5ff", foreground=BONE, background="#050506", surface="#0d0d10",
+    panel="#140205", dark=True,
+)
+
+
+class CapricornApp(App):
+    TITLE = "Capricorn"
     CSS = """
-    Screen { layout: vertical; }
+    Screen { layout: vertical; background: #050506; }
+    #banner { height: 1; background: $primary; color: #050506; text-style: bold; padding: 0 1; }
     #grid { layout: grid; grid-size: 3 3; grid-gutter: 0; height: 1fr; }
-    .panel { border: round $panel-lighten-2; padding: 0 1; height: 100%; scrollbar-size-vertical: 1; }
-    .panel:focus, .panel:focus-within { border: round $accent; }
+    .panel {
+        border: solid #3d0710; border-title-color: #ff1a3c; border-title-style: bold;
+        border-subtitle-color: #6e7681; padding: 0 1; height: 100%; background: #08080a;
+        scrollbar-size-vertical: 1; scrollbar-color: #5c0a16; scrollbar-background: #08080a;
+        scrollbar-color-hover: #ff1a3c; scrollbar-color-active: #ff1a3c;
+    }
+    .panel.active { border: solid #ff1a3c; border-subtitle-color: #ff1a3c; }
+    .panel.failed { border: double #ff1a3c; }
+    .panel:focus, .panel:focus-within { border: heavy #ff1a3c; background: #0c0607; }
     #p-git { overflow-y: auto; }
     Item { margin-bottom: 1; }
     Item.incoming { margin-bottom: 0; }
     #p-feed Item { margin-bottom: 0; }
-    Item.hl { background: $boost; }
-    #status { height: 1; padding: 0 1; background: $panel; color: $text-muted; }
-    #prompt { border: tall $accent; }
+    Item.hl { background: #2a0309; border-left: thick #ff1a3c; padding-left: 1; }
+    #status { height: 1; padding: 0 1; background: #140205; color: #a8a29a; }
+    #prompt { border: heavy #ff1a3c; background: #08080a; color: #e9e4dc; }
+    #prompt:focus { border: heavy #ff1a3c; background-tint: #ff1a3c 4%; }
+    #prompt > .input--placeholder { color: #6e7681; }
+    #prompt > .input--cursor { background: #ff1a3c; color: #050506; }
     """
     COMMAND_PALETTE_BINDING = "ctrl+backslash"
     BINDINGS = [
@@ -293,6 +337,7 @@ class AgoraApp(App):
         self.panels: dict[str, AgentPanel] = {}
 
     def compose(self) -> ComposeResult:
+        yield Static(BANNER, id="banner")
         with Container(id="grid"):
             for i, key in enumerate(PANEL_ORDER, 1):
                 if key == "git":
@@ -304,16 +349,18 @@ class AgoraApp(App):
                     self.panels[key] = p
                     yield p
         yield Static(id="status")
-        yield PromptInput(id="prompt", placeholder="Задача для команды…  @agent — адресно, /help — команды")
+        yield PromptInput(id="prompt", placeholder="▸ задача для команды… @agent — адресно · /help — команды")
 
     # ---------------------------------------------------------- lifecycle
     def on_mount(self):
+        self.register_theme(CAPRICORN_THEME)
+        self.theme = "capricorn"
         self.orch = Orchestrator(self.cfg, self.repo, self.handle_orch_event)
         for name, p in self.panels.items():
             p.set_meta(model=self.cfg.agents[name].model)
         self.apply_layout()
         self.orch.start()
-        self.feed.system(f"Agora · конфиг: {self.cfg.source} · репо: {self.repo}")
+        self.feed.system(f"◢ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
         self.feed.system("/help — команды. Напиши задачу — менеджер раздаст её команде.")
         self.refresh_git()
         self.set_interval(5, self.refresh_git)
@@ -339,13 +386,19 @@ class AgoraApp(App):
         busy = [a.name for a in o.agents.values() if a.status in ("thinking", "typing")]
         tin = sum(a.tokens_in for a in o.agents.values())
         tout = sum(a.tokens_out for a in o.agents.values())
-        state = "[yellow]⏸ ПАУЗА[/]" if not o.running.is_set() else (
-            f"[green]▶ работают: {', '.join(busy)}[/]" if busy else "[grey50]○ ожидание[/]")
-        att = f" · 📎{len(o.attachments)}" if o.attachments else ""
-        mode = "сложный (3 кодера)" if self.cfg.complex_mode else "обычный"
+        if not o.running.is_set():
+            state = f"[bold #050506 on #f5d300] ‖ ПАУЗА [/]"
+        elif busy:
+            state = f"[bold #050506 on {RED}] ▶ LIVE [/] [{RED}]{' '.join(busy)}[/]"
+        else:
+            state = f"[{STEEL}]▫ STANDBY[/]"
+        att = f" ┃ 📎{len(o.attachments)}" if o.attachments else ""
+        mode = "COMPLEX ×3" if self.cfg.complex_mode else "STANDARD"
+        sep = f" [{RED_DIM}]┃[/] "
         self.query_one("#status", Static).update(
-            f"{state} · ходов осталось: {o.budget} · режим: {mode} · токены {k(tin)}↑ {k(tout)}↓{att}"
-            f" · F5 пауза F8 стоп ctrl+b ветки")
+            f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}РЕЖИМ [{BONE}]{mode}[/]{sep}"
+            f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]{att}{sep}"
+            f"[{STEEL}]F5 пауза · F8 стоп · ctrl+b ветки · /help[/]")
 
     # ------------------------------------------------------ orchestrator
     def handle_orch_event(self, kind: str, **d):

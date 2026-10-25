@@ -176,7 +176,7 @@ class Orchestrator:
         self._repo_ctx: tuple[float, str] = (0, "")
         self._budget_warned = False
         self._tasks: list[asyncio.Task] = []
-        log_dir = Path.home() / ".local" / "share" / "agora" / "sessions"
+        log_dir = Path.home() / ".local" / "share" / "capricorn" / "sessions"
         log_dir.mkdir(parents=True, exist_ok=True)
         self.log_path = log_dir / time.strftime("%Y%m%d-%H%M%S.jsonl")
 

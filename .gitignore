@@ -1,4 +1,4 @@
 __pycache__/
 *.egg-info/
-agora.yaml
-.agora/
+capricorn.yaml
+.capricorn/
