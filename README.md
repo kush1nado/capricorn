@@ -57,6 +57,20 @@ capricorn --complex              # сразу с третьим кодером
 | `/branch <имя>` или ctrl+b | переключить ветку |
 | `/zoom <агент>` или alt+1..9 | развернуть панель, esc — назад |
 
+## Разработка
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -e .[dev]   # Linux/macOS: .venv/bin/python
+git config core.hooksPath .githooks             # pre-commit: поднятая версия + зелёные тесты
+.venv/Scripts/python -m pytest -q
+.venv/Scripts/python scripts/version.py bump    # каждый коммит поднимает версию (patch)
+```
+
+Правила работы — в [CLAUDE.md](CLAUDE.md), типовые сценарии — в [.claude/SKILLS.md](.claude/SKILLS.md).
+Тесты не ходят в сеть: HTTP-провайдеры проверяются через `httpx.MockTransport`, агенты — через
+скриптованный провайдер, интерфейс — через Textual Pilot.
+
 ## Дальше (v0.2+)
 
 1. **Инструменты агентов**: `read_file`, `write_file`, `run_tests`, `git_diff` через tool calling

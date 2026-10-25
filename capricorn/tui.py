@@ -432,6 +432,8 @@ class CapricornApp(App):
         if text.startswith("/"):
             try:
                 self.command(text)
+            except IndexError:
+                self.feed.system(f"⚠ не хватает аргументов: {text}. /help", "error")
             except Exception as e:  # noqa: BLE001
                 self.feed.system(f"⚠ {e}", "error")
         else:

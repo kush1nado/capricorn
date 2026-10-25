@@ -85,17 +85,18 @@ class Agent:
             self.orch.budget -= 1
             batch, self.pending = self.pending, []
             ctx, self.context = self.context, []
+            ok = False
             self.gen_task = asyncio.create_task(self._turn(batch, ctx))
             try:
-                await self.gen_task
+                ok = await self.gen_task
             except asyncio.CancelledError:
                 pass
             finally:
                 self.gen_task = None
-            if self.pending:
+            if ok and self.pending:           # после ошибки повтор — только /retry или новое сообщение
                 self.wake.set()
 
-    async def _turn(self, batch: list[Message], ctx: list[Message]):
+    async def _turn(self, batch: list[Message], ctx: list[Message]) -> bool:
         parts = []
         if ctx:
             parts.append("(для контекста, отвечать не нужно)\n" +
@@ -104,14 +105,14 @@ class Agent:
         self.history.append({"role": "user", "content": "\n\n---\n\n".join(parts)})
         self._trim()
 
-        provider = self.orch.provider_for(self.name)
-        system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
-                               await self.orch.repo_context(), self.cfg.extra_prompt)
         msg_id = next(self.orch.ids)
         self.orch.emit("stream_start", agent=self.name, msg_id=msg_id)
         self.set_status("thinking")
         text = ""
         try:
+            provider = self.orch.provider_for(self.name)
+            system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
+                                   await self.orch.repo_context(), self.cfg.extra_prompt)
             async for chunk in provider.stream(
                     model=self.cfg.model_id, system=system, messages=self.history,
                     temperature=self.cfg.temperature, max_tokens=self.cfg.max_tokens,
@@ -131,14 +132,14 @@ class Agent:
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=text, to=[])
             self.set_status("stopped")
             raise
-        except (ProviderError, Exception) as e:  # noqa: BLE001 — показываем любую ошибку провайдера
+        except Exception as e:  # noqa: BLE001 — любая ошибка провайдера/конфига идёт в UI, цикл живёт
             self.history.pop()                    # сохраняем чередование user/assistant
             self.pending = batch + self.pending   # можно повторить через /retry
             self.context = ctx + self.context
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text="", to=[])
             self.orch.emit("system", text=f"⚠ {self.name}: {type(e).__name__}: {e}", level="error")
             self.set_status("error")
-            return
+            return False
 
         self.turns += 1
         self.history.append({"role": "assistant", "content": text})
@@ -147,6 +148,7 @@ class Agent:
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=text, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
+        return True
 
     def _trim(self):
         limit = self.orch.cfg.max_history

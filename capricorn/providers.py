@@ -132,6 +132,7 @@ class OpenAICompatProvider(Provider):
 # ---------------------------------------------------------------- mock ----
 
 _FROM_RE = re.compile(r"^\[от (\w+)", re.M)
+_SPLIT_RE = re.compile(r"^(?=\[от \w+)", re.M)
 
 
 class MockProvider(Provider):
@@ -162,7 +163,8 @@ class MockProvider(Provider):
                         "- tester — тесты на граничные случаи\n\n"
                         "@coder1 @coder2 @tester за работу.")
             if "APPROVED" in last:
-                n = self._bump("approved")
+                self.seen["approved"] = self.seen.get("approved", 0) + last.count("APPROVED")
+                n = self.seen["approved"]
                 if n >= 2 and self.seen.get("tested"):
                     return "@user Готово: код прошёл ревью, тесты написаны. Можно мержить."
                 return f"Фиксирую: одобрено ревью ({n}/2)."
@@ -210,9 +212,20 @@ class MockProvider(Provider):
                     "Нашёл кейс: конкурентная запись в SQLite без блокировки.\n\n@manager тесты готовы.")
         return "..."
 
+    def _replies(self, agent: str, last: str) -> str:
+        """Пачка входящих = один ход: отвечаем на каждое сообщение, а не только на последнее."""
+        batch = last.split("\n\n---\n\n")[-1]          # без подслушанного контекста
+        parts = [p for p in _SPLIT_RE.split(batch) if p.strip()] or [last]
+        out: list[str] = []
+        for part in parts:
+            reply = self._reply(agent, part)
+            if reply not in out:
+                out.append(reply)
+        return "\n\n".join(out)
+
     async def stream(self, *, model, system, messages, temperature, max_tokens, agent):
         last = messages[-1]["content"] if messages else ""
-        text = self._reply(agent, last)
+        text = self._replies(agent, last)
         await asyncio.sleep(random.uniform(0.3, 1.0))
         for i in range(0, len(text), 4):
             yield text[i:i + 4]
