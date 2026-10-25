@@ -12,10 +12,22 @@
 1. `.venv/Scripts/python -m pytest -q`: всё зелёное.
 2. `.venv/Scripts/python scripts/version.py bump` (patch; minor/major только по слову владельца).
 3. `git add <файлы> capricorn/__init__.py`. Только нужные файлы, без `git add -A`.
-4. Сообщение на английском, в повелительном наклонении. В конце строка `Co-Authored-By`.
+4. Сообщение на английском, в повелительном наклонении. **Без `Co-Authored-By`** (хук `commit-msg` отклонит).
 
 **Ловушки:** хук проверяет версию в *индексе*: забыл `git add capricorn/__init__.py`, и коммит отклонён.
 Хук гоняет тесты по рабочему дереву, а не по индексу. Неподготовленные изменения могут замаскировать проблему.
+
+## Правка сообщения последнего (незапушенного) коммита
+
+`git commit --amend` упрётся в pre-commit: версия в индексе равна версии в HEAD. `--no-verify` запрещён.
+Если меняется только сообщение (дерево то же), пересобери коммит без хуков, с сохранением автора и даты:
+
+```bash
+git log -1 --format=%B > /tmp/msg && $EDITOR /tmp/msg
+GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae)" GIT_AUTHOR_DATE="$(git log -1 --format=%aD)" git reset --soft "$(git commit-tree 'HEAD^{tree}' -p HEAD~1 -F /tmp/msg)"
+```
+Затем `git diff <старый-хэш> HEAD` должен быть пуст. Уже запушенный коммит переписывать только с согласия владельца
+(нужен force-push).
 
 ## Багфикс
 

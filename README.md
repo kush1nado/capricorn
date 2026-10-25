@@ -62,7 +62,7 @@ capricorn --complex              # сразу с третьим кодером
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e .[dev]   # Linux/macOS: .venv/bin/python
-git config core.hooksPath .githooks             # pre-commit: поднятая версия + зелёные тесты
+git config core.hooksPath .githooks             # pre-commit: версия + тесты; commit-msg: без соавторов
 .venv/Scripts/python -m pytest -q
 .venv/Scripts/python scripts/version.py bump    # каждый коммит поднимает версию (patch)
 ```

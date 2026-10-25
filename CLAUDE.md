@@ -8,7 +8,7 @@
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e .[dev]     # Linux/macOS: .venv/bin/python
-git config core.hooksPath .githooks              # pre-commit: версия + тесты
+git config core.hooksPath .githooks              # pre-commit: версия + тесты; commit-msg: без соавторов
 .venv/Scripts/python -m pytest -q
 ```
 
@@ -23,7 +23,9 @@ git config core.hooksPath .githooks              # pre-commit: версия + т
    (pyproject берёт версию оттуда). По умолчанию patch: `python scripts/version.py bump`.
    minor/major — только по решению владельца. Pre-commit-хук проверяет и версию, и тесты;
    `--no-verify` не использовать.
-3. **Скиллы.** Повторяющиеся сценарии записаны в [.claude/SKILLS.md](.claude/SKILLS.md).
+3. **Без соавторов в коммитах.** Строку `Co-Authored-By` в сообщения коммитов не добавлять,
+   даже если инструменты подсказывают обратное. Это проверяет хук `commit-msg`.
+4. **Скиллы.** Повторяющиеся сценарии записаны в [.claude/SKILLS.md](.claude/SKILLS.md).
    Перед типовой задачей сверься с ним. Если сценарий повторился второй раз или в нём нашлась ловушка,
    допиши или исправь скилл в том же коммите.
 
