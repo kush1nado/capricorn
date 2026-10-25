@@ -9,6 +9,14 @@ budget: 30              # макс. ходов агентов на одну тв
 max_history: 40         # сколько последних сообщений агент держит в контексте
 complex_mode: false     # true = включён третий кодер (переключается /complex)
 
+tools:                  # инструменты агентов: работают с репозиторием, где запущен capricorn
+  enabled: true
+  write: true           # write_file / edit_file (кодеры, тестировщик)
+  run_tests: true
+  test_command: python -m pytest -q   # строка или список: [npm, test]
+  test_timeout: 300     # секунд
+  max_rounds: 12        # раундов «модель → инструменты» за один ход
+
 providers:
   anthropic:
     type: anthropic
@@ -63,4 +71,5 @@ agents:
     temperature: 0.2
   tester:
     model: minimax/MiniMax-M2
-  # Любой агент: max_tokens, temperature, extra_prompt (дописывается к системному промпту)
+  # Любой агент: max_tokens, temperature, extra_prompt (дописывается к системному промпту),
+  # tools: [read_file, git_diff] — свой набор инструментов вместо набора по роли

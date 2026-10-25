@@ -31,6 +31,7 @@ class AgentConfig:
     max_tokens: int = 4096
     observe_all: bool = False
     extra_prompt: str = ""
+    tools: list[str] | None = None      # None — набор по роли (tools.ROLE_TOOLS)
 
     @property
     def provider(self) -> str:
@@ -42,6 +43,16 @@ class AgentConfig:
 
 
 @dataclass
+class ToolsConfig:
+    enabled: bool = True
+    write: bool = True                  # write_file / edit_file
+    run_tests: bool = True
+    test_command: str | list[str] = "python -m pytest -q"
+    test_timeout: int = 300
+    max_rounds: int = 12                # раундов «модель → инструменты» за один ход
+
+
+@dataclass
 class Config:
     language: str = "ru"
     default_target: str = "manager"
@@ -50,6 +61,7 @@ class Config:
     complex_mode: bool = False
     providers: dict = field(default_factory=lambda: {"mock": {"type": "mock"}})
     agents: dict[str, AgentConfig] = field(default_factory=dict)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     source: str = "defaults"
 
 
@@ -84,6 +96,16 @@ def load_config(path: str | None = None, force_mock: bool = False) -> Config:
     )
     cfg.providers.setdefault("mock", {"type": "mock"})
 
+    t = raw.get("tools") or {}
+    cfg.tools = ToolsConfig(
+        enabled=bool(t.get("enabled", True)),
+        write=bool(t.get("write", True)),
+        run_tests=bool(t.get("run_tests", True)),
+        test_command=t.get("test_command", ToolsConfig.test_command),
+        test_timeout=int(t.get("test_timeout", 300)),
+        max_rounds=int(t.get("max_rounds", 12)),
+    )
+
     agents_raw = raw.get("agents") or {}
     for role in ROLES:
         a = agents_raw.get(role) or {}
@@ -94,6 +116,7 @@ def load_config(path: str | None = None, force_mock: bool = False) -> Config:
             max_tokens=int(a.get("max_tokens", 4096)),
             observe_all=bool(a.get("observe_all", role == "manager")),
             extra_prompt=a.get("extra_prompt", ""),
+            tools=list(a["tools"]) if a.get("tools") is not None else None,
         )
         if force_mock:
             ac.model = f"mock/{role}"

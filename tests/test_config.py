@@ -77,3 +77,23 @@ def test_example_config_is_consistent():
         assert a.provider in cfg.providers, f"{name}: провайдер {a.provider} не описан"
     for name, p in cfg.providers.items():
         assert p.get("type") in ("openai", "anthropic", "mock"), name
+
+
+def test_tools_defaults():
+    t = load_config().tools
+    assert (t.enabled, t.write, t.run_tests, t.max_rounds) == (True, True, True, 12)
+    assert t.test_command == "python -m pytest -q"
+    assert all(a.tools is None for a in load_config().agents.values())
+
+
+def test_tools_section_and_agent_override(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "tools:\n  write: false\n  test_command: [npm, test]\n  test_timeout: 60\n  max_rounds: 3\n"
+        "agents:\n  reviewer:\n    tools: [read_file, git_diff]\n", encoding="utf-8")
+    cfg = load_config(str(p))
+    assert cfg.tools.write is False and cfg.tools.enabled is True
+    assert cfg.tools.test_command == ["npm", "test"]
+    assert (cfg.tools.test_timeout, cfg.tools.max_rounds) == (60, 3)
+    assert cfg.agents["reviewer"].tools == ["read_file", "git_diff"]
+    assert cfg.agents["coder1"].tools is None

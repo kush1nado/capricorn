@@ -5,8 +5,14 @@
               MiniMax, OpenRouter, Groq, Together, Ollama, LM Studio, vLLM, llama.cpp
 * mock      — офлайн-заглушка, разыгрывает диалог команды без сети
 
-Каждый stream() — асинхронный генератор: отдаёт str-чанки текста и
-в конце dict {"usage": {"in": int, "out": int}}.
+Каждый stream() — асинхронный генератор: отдаёт str-чанки текста, затем (если модель
+вызвала инструменты) {"tool_calls": [{"id", "name", "args"}]} и в конце {"usage": {"in", "out"}}.
+
+История агента хранится в нейтральном формате и переводится под каждый API:
+  {"role": "user", "content": str}
+  {"role": "assistant", "content": str, "tool_calls": [{"id", "name", "args": dict}]}  (tool_calls — необязательно)
+  {"role": "tool", "results": [{"id", "name", "content": str, "is_error": bool}]}
+Инструменты: [{"name", "description", "parameters": JSON Schema}].
 """
 from __future__ import annotations
 
@@ -31,7 +37,8 @@ class Provider:
         self.conf = conf
 
     async def stream(self, *, model: str, system: str, messages: list[dict],
-                     temperature: float, max_tokens: int, agent: str) -> AsyncIterator[Chunk]:
+                     temperature: float, max_tokens: int, agent: str,
+                     tools: list[dict] | None = None, tool_choice: str = "auto") -> AsyncIterator[Chunk]:
         raise NotImplementedError
         yield  # pragma: no cover
 
@@ -42,58 +49,140 @@ async def _sse_lines(resp: httpx.Response) -> AsyncIterator[str]:
             yield line[5:].strip()
 
 
+def _parse_args(raw: str) -> dict | str:
+    """JSON-аргументы инструмента; при ошибке — исходная строка (Toolbox вернёт модели ошибку)."""
+    if not raw.strip():
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+# ------------------------------------------------------------ anthropic ----
+
+def to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    out = []
+    for m in messages:
+        role = m["role"]
+        if role == "user":
+            out.append({"role": "user", "content": m["content"]})
+        elif role == "assistant":
+            calls = m.get("tool_calls") or []
+            text = m.get("content") or ""
+            if not calls:
+                # Anthropic не принимает пустой текст ассистента
+                out.append({"role": "assistant", "content": text if text.strip() else "…"})
+                continue
+            blocks = [{"type": "text", "text": text}] if text.strip() else []
+            blocks += [{"type": "tool_use", "id": c["id"], "name": c["name"],
+                        "input": c["args"] if isinstance(c["args"], dict) else {}} for c in calls]
+            out.append({"role": "assistant", "content": blocks})
+        elif role == "tool":
+            out.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": r["id"], "content": r["content"],
+                 "is_error": bool(r.get("is_error"))} for r in m["results"]]})
+    return out
+
+
 class AnthropicProvider(Provider):
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent):
+    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                     tools=None, tool_choice="auto"):
         key = self.conf.get("api_key") or ""
         if not key:
             raise ProviderError(f"{self.name}: нет api_key")
         url = (self.conf.get("base_url") or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
-        body = {"model": model, "system": system, "messages": messages,
+        body = {"model": model, "system": system, "messages": to_anthropic_messages(messages),
                 "max_tokens": max_tokens, "temperature": temperature, "stream": True}
+        if tools:
+            body["tools"] = [{"name": t["name"], "description": t["description"],
+                              "input_schema": t["parameters"]} for t in tools]
+            body["tool_choice"] = {"type": tool_choice}
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
                    "content-type": "application/json"}
         usage = {"in": 0, "out": 0}
+        blocks: dict[int, dict] = {}            # index → накапливаемый tool_use
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20)) as client:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
-                    raise ProviderError(f"{resp.status_code}: {(await resp.aread()).decode()[:400]}")
+                    raise ProviderError(f"{resp.status_code}: {(await resp.aread()).decode(errors='replace')[:400]}")
                 async for data in _sse_lines(resp):
                     try:
                         ev = json.loads(data)
                     except json.JSONDecodeError:
                         continue
                     t = ev.get("type")
-                    if t == "content_block_delta" and ev["delta"].get("type") == "text_delta":
-                        yield ev["delta"]["text"]
+                    if t == "content_block_delta":
+                        d = ev["delta"]
+                        if d.get("type") == "text_delta":
+                            yield d["text"]
+                        elif d.get("type") == "input_json_delta" and ev.get("index") in blocks:
+                            blocks[ev["index"]]["json"] += d.get("partial_json", "")
+                    elif t == "content_block_start" and ev.get("content_block", {}).get("type") == "tool_use":
+                        cb = ev["content_block"]
+                        blocks[ev.get("index", len(blocks))] = {"id": cb["id"], "name": cb["name"], "json": ""}
                     elif t == "message_start":
                         usage["in"] = ev["message"].get("usage", {}).get("input_tokens", 0)
                     elif t == "message_delta":
                         usage["out"] = ev.get("usage", {}).get("output_tokens", usage["out"])
                     elif t == "error":
                         raise ProviderError(str(ev.get("error")))
+        if blocks:
+            yield {"tool_calls": [{"id": b["id"], "name": b["name"], "args": _parse_args(b["json"])}
+                                  for _, b in sorted(blocks.items())]}
         yield {"usage": usage}
+
+
+# --------------------------------------------------------------- openai ----
+
+def to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
+    out = [{"role": "system", "content": system}]
+    for m in messages:
+        role = m["role"]
+        if role == "user":
+            out.append({"role": "user", "content": m["content"]})
+        elif role == "assistant":
+            calls = m.get("tool_calls") or []
+            if not calls:
+                out.append({"role": "assistant", "content": m.get("content") or ""})
+                continue
+            out.append({"role": "assistant", "content": m.get("content") or None, "tool_calls": [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"],
+                              "arguments": json.dumps(c["args"], ensure_ascii=False)
+                              if isinstance(c["args"], dict) else str(c["args"])}}
+                for c in calls]})
+        elif role == "tool":
+            out += [{"role": "tool", "tool_call_id": r["id"], "content": r["content"]} for r in m["results"]]
+    return out
 
 
 class OpenAICompatProvider(Provider):
     """Сам подстраивается под капризы провайдеров: если endpoint ругается на
-    temperature / max_tokens / stream_options — повторяет запрос без них."""
+    temperature / max_tokens / stream_options / tools — повторяет запрос без них
+    (без инструментов агент просто работает текстом)."""
 
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent):
+    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                     tools=None, tool_choice="auto"):
         base = (self.conf.get("base_url") or "https://api.openai.com/v1").rstrip("/")
         headers = {"Authorization": f"Bearer {self.conf.get('api_key') or 'none'}",
                    "Content-Type": "application/json"}
         headers.update(self.conf.get("headers") or {})
-        params = {"temperature": temperature, "max_tokens": max_tokens,
-                  "stream_options": {"include_usage": True}}
+        params: dict = {"temperature": temperature, "max_tokens": max_tokens,
+                        "stream_options": {"include_usage": True}}
         # Reasoning-модели OpenAI не принимают temperature и max_tokens
         if re.match(r"^(o\d|gpt-5)", model):
             params.pop("temperature")
             params["max_completion_tokens"] = params.pop("max_tokens")
+        if tools:
+            params["tools"] = [{"type": "function", "function": t} for t in tools]
+            params["tool_choice"] = tool_choice
+        wire = to_openai_messages(system, messages)
 
-        for _attempt in range(4):
-            body = {"model": model, "stream": True,
-                    "messages": [{"role": "system", "content": system}, *messages], **params}
+        for _attempt in range(6):
+            body = {"model": model, "stream": True, "messages": wire, **params}
             usage = {"in": 0, "out": 0}
+            calls: dict[int, dict] = {}
             async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20)) as client:
                 async with client.stream("POST", base + "/chat/completions",
                                          json=body, headers=headers) as resp:
@@ -105,6 +194,8 @@ class OpenAICompatProvider(Provider):
                                 params.pop(p); fixed = True
                         if "max_tokens" in err and "max_tokens" in params:
                             params["max_completion_tokens"] = params.pop("max_tokens"); fixed = True
+                        if "tool" in err.lower() and "tools" in params:
+                            params.pop("tools"); params.pop("tool_choice", None); fixed = True
                         if fixed:
                             continue
                         raise ProviderError(f"400: {err[:400]}")
@@ -121,9 +212,19 @@ class OpenAICompatProvider(Provider):
                             usage = {"in": ev["usage"].get("prompt_tokens", 0),
                                      "out": ev["usage"].get("completion_tokens", 0)}
                         for ch in ev.get("choices") or []:
-                            text = (ch.get("delta") or {}).get("content")
-                            if text:
-                                yield text
+                            delta = ch.get("delta") or {}
+                            if delta.get("content"):
+                                yield delta["content"]
+                            for i, tc in enumerate(delta.get("tool_calls") or []):
+                                slot = calls.setdefault(tc.get("index", i), {"id": "", "name": "", "args": ""})
+                                slot["id"] = tc.get("id") or slot["id"]
+                                fn = tc.get("function") or {}
+                                slot["name"] = fn.get("name") or slot["name"]
+                                slot["args"] += fn.get("arguments") or ""
+            if calls:
+                yield {"tool_calls": [{"id": c["id"] or f"call_{i}", "name": c["name"],
+                                       "args": _parse_args(c["args"])}
+                                      for i, c in sorted(calls.items())]}
             yield {"usage": usage}
             return
         raise ProviderError("не удалось подобрать параметры запроса")
@@ -136,7 +237,8 @@ _SPLIT_RE = re.compile(r"^(?=\[от \w+)", re.M)
 
 
 class MockProvider(Provider):
-    """Разыгрывает правдоподобный спор команды, чтобы проверить UI без ключей."""
+    """Разыгрывает правдоподобный спор команды, чтобы проверить UI без ключей.
+    Инструменты не вызывает: офлайн-демо не должно трогать файлы репозитория."""
 
     def __init__(self, name, conf):
         super().__init__(name, conf)
@@ -223,8 +325,9 @@ class MockProvider(Provider):
                 out.append(reply)
         return "\n\n".join(out)
 
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent):
-        last = messages[-1]["content"] if messages else ""
+    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                     tools=None, tool_choice="auto"):
+        last = (messages[-1].get("content") or "") if messages else ""
         text = self._replies(agent, last)
         await asyncio.sleep(random.uniform(0.3, 1.0))
         for i in range(0, len(text), 4):

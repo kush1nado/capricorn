@@ -216,3 +216,137 @@ async def test_coder3_joins_only_in_complex_mode(make_orch):
     orch.user_says("два")
     await settle(orch)
     assert orch.agents["coder3"].turns == 1
+
+
+# ------------------------------------------------------------- инструменты
+
+from helpers import tool  # noqa: E402
+
+
+async def test_coder_writes_file_then_reports(make_orch, tmp_path):
+    orch, events = make_orch({
+        "coder1": [tool("write_file", path="calc.py", content="def add(a, b):\n    return a + b\n"),
+                   tool("read_file", path="calc.py"),
+                   "Готово, `calc.py`. @reviewer"],
+    })
+    orch.route("manager", "@coder1 напиши add()")
+    await settle(orch)
+
+    assert (tmp_path / "calc.py").read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
+    hist = orch.agents["coder1"].history
+    assert [m["role"] for m in hist] == ["user", "assistant", "tool", "assistant", "tool", "assistant"]
+    assert hist[1]["tool_calls"][0]["name"] == "write_file"
+    assert hist[2]["results"][0]["content"] == "calc.py создан, строк: 2"
+    assert "return a + b" in hist[4]["results"][0]["content"]
+    assert hist[-1] == {"role": "assistant", "content": "Готово, `calc.py`. @reviewer"}
+
+    msg, = [m for m in messages(events) if m.sender == "coder1"]
+    assert msg.to == ["reviewer"] and msg.content == "Готово, `calc.py`. @reviewer"
+    assert orch.agents["coder1"].turns == 1 and orch.budget == orch.cfg.budget - 2   # coder1 + reviewer
+
+    end = [d for d in kinds(events, "stream_end") if d["agent"] == "coder1"][0]
+    assert "» `write_file` `calc.py` создан, 2 стр." in end["text"]
+    assert end["text"].endswith("Готово, `calc.py`. @reviewer")
+    tools_ev = [d for d in kinds(events, "tool") if d["agent"] == "coder1"]
+    assert [(t["name"], t["ok"]) for t in tools_ev] == [("write_file", True), ("read_file", True)]
+    statuses = [d["status"] for d in kinds(events, "status") if d["agent"] == "coder1"]
+    assert "working" in statuses and statuses[-1] == "idle"
+
+
+async def test_tool_specs_follow_role(make_orch):
+    orch, _ = make_orch({"architect": "ок", "coder1": "ок"})
+    orch.route("manager", "@architect @coder1 привет")
+    await settle(orch)
+    p = orch.providers["script"]
+    arch_tools = {t["name"] for t in p.calls_for("architect")[0].tools}
+    coder_tools = {t["name"] for t in p.calls_for("coder1")[0].tools}
+    assert "write_file" not in arch_tools and "write_file" in coder_tools
+    assert "## Инструменты" in p.calls_for("coder1")[0].system
+
+
+async def test_tools_disabled_sends_none(make_orch):
+    orch, _ = make_orch({"coder1": "ок"})
+    orch.cfg.tools.enabled = False
+    orch.route("manager", "@coder1 x")
+    await settle(orch)
+    call, = orch.providers["script"].calls_for("coder1")
+    assert call.tools is None
+    assert "Инструментов записи у тебя нет" in call.system
+
+
+async def test_tool_errors_go_back_to_model(make_orch):
+    orch, events = make_orch({
+        "architect": [tool("write_file", path="x.py", content="x"), "понял, писать не могу"],
+    })
+    orch.route("manager", "@architect запиши файл")
+    await settle(orch)
+    hist = orch.agents["architect"].history
+    res = hist[2]["results"][0]
+    assert res["is_error"] and "недоступен" in res["content"]
+    assert [d["ok"] for d in kinds(events, "tool")] == [False]
+    assert orch.agents["architect"].status == "idle"
+
+
+async def test_rounds_are_limited_and_last_round_forbids_tools(make_orch, tmp_path):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    orch, _ = make_orch({"coder1": lambda agent, last: tool("read_file", path="a.txt")})
+    orch.cfg.tools.max_rounds = 2
+    orch.route("manager", "@coder1 читай бесконечно")
+    await settle(orch)
+    calls = orch.providers["script"].calls_for("coder1")
+    assert [c.tool_choice for c in calls] == ["auto", "auto", "none"]
+    hist = orch.agents["coder1"].history
+    assert [m["role"] for m in hist] == ["user", "assistant", "tool", "assistant", "tool", "assistant"]
+    assert "tool_calls" not in hist[-1]
+
+
+async def test_error_mid_tool_loop_rolls_back_turn(make_orch, tmp_path):
+    orch, events = make_orch({"coder1": [tool("write_file", path="w.py", content="1"),
+                                         RuntimeError("503 overloaded"), "дописал"]})
+    orch.route("manager", "@coder1 пиши")
+    await settle(orch)
+    c1 = orch.agents["coder1"]
+    assert c1.status == "error" and c1.history == [] and len(c1.pending) == 1
+    assert (tmp_path / "w.py").exists()                  # действие инструмента уже случилось
+    orch.retry("coder1")
+    await settle(orch)
+    assert [m["role"] for m in c1.history] == ["user", "assistant"]
+    assert c1.history[-1]["content"] == "дописал"
+
+
+async def test_stop_during_tool_loop_keeps_history_valid(make_orch):
+    started = asyncio.Event()
+
+    async def hang(agent, last):
+        started.set()
+        await asyncio.Event().wait()
+
+    orch, _ = make_orch({"coder1": [tool("list_files"), hang]})
+    orch.route("manager", "@coder1 x")
+    await asyncio.wait_for(started.wait(), 5)
+    orch.stop_all()
+    await settle(orch)
+    hist = orch.agents["coder1"].history
+    assert [m["role"] for m in hist] == ["user", "assistant"]
+    assert "tool_calls" not in hist[-1] and hist[-1]["content"].endswith("[прервано]")
+
+
+async def test_trim_never_starts_with_tool_entries(make_orch, tmp_path):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    orch, _ = make_orch({"coder1": [tool("read_file", path="a.txt"), "ок"] * 4}, max_history=4)
+    for i in range(4):
+        orch.route("manager", f"@coder1 раз {i}")
+        await settle(orch)
+    for c in orch.providers["script"].calls_for("coder1"):
+        assert c.messages[0]["role"] == "user"
+        assert len(c.messages) <= 6
+
+
+async def test_tool_calls_are_logged(make_orch, isolated_home):
+    orch, _ = make_orch({"coder1": [tool("list_files"), "ок"]})
+    orch.route("manager", "@coder1 x")
+    await settle(orch)
+    import json
+    recs = [json.loads(line) for line in orch.log_path.read_text(encoding="utf-8").splitlines()]
+    assert {"type": "tool", "agent": "coder1", "name": "list_files", "args": {}, "ok": True,
+            "summary": recs[1]["summary"]} == recs[1]

@@ -24,8 +24,7 @@ ROLE_PROMPTS = {
         "Когда работа завершена или нужен выбор человека — пиши @user с кратким итогом."
     ),
     "coder": (
-        "Ты — разработчик. Пишешь рабочий код по назначенной подзадаче. Каждый файл — "
-        "в блоке кода с путём в первой строке комментария. Если постановка неясна — "
+        "Ты — разработчик. Пишешь рабочий код по назначенной подзадаче. Если постановка неясна — "
         "спрашивай архитектора, а не додумывай. Готовый код отправляй ревьюеру. "
         "Можешь возражать на замечания ревью, если уверен в своей правоте."
     ),
@@ -58,7 +57,39 @@ PROTOCOL = """\
 """
 
 
-def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, extra: str = "") -> str:
+TOOL_HINTS = {
+    "read": "- Изучай код через list_files / search / read_file, а не по памяти и не наугад.",
+    "write": ("- Код пиши сразу в файлы: write_file для новых, edit_file для точечных правок. "
+              "В сообщении коллегам файлы целиком не вставляй — коротко: что сделал, какие файлы, "
+              "на что смотреть."),
+    "diff": "- Чужие изменения смотри через git_diff (новые файлы — через read_file).",
+    "tests": "- Проверяй изменения через run_tests и пересказывай суть вывода (что упало и почему).",
+}
+NO_WRITE_HINT = ("Инструментов записи у тебя нет: каждый файл — в блоке кода с путём "
+                 "в первой строке комментария.")
+
+
+def tools_section(role: str, tools: list[str]) -> str:
+    if not tools:
+        base = "coder" if role.startswith("coder") else role
+        return NO_WRITE_HINT if base in ("coder", "tester") else ""
+    have = set(tools)
+    lines = ["## Инструменты", f"Доступны: {', '.join(tools)}. Они работают с реальным репозиторием."]
+    if have & {"read_file", "search", "list_files"}:
+        lines.append(TOOL_HINTS["read"])
+    if have & {"write_file", "edit_file"}:
+        lines.append(TOOL_HINTS["write"])
+    elif role.startswith("coder") or role == "tester":
+        lines.append(NO_WRITE_HINT)
+    if "git_diff" in have:
+        lines.append(TOOL_HINTS["diff"])
+    if "run_tests" in have:
+        lines.append(TOOL_HINTS["tests"])
+    return "\n".join(lines)
+
+
+def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, extra: str = "",
+                  tools: list[str] | None = None) -> str:
     base_role = "coder" if role.startswith("coder") else role
     roster_txt = "\n".join(f"- @{r} — {ROLE_TITLES.get(r, r)}{' (это ты)' if r == role else ''}"
                            for r in roster)
@@ -68,6 +99,9 @@ def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, ex
         ROLE_PROMPTS[base_role],
         PROTOCOL.format(roster=roster_txt, language=lang),
     ]
+    section = tools_section(role, tools or [])
+    if section:
+        parts.append(section)
     if repo_ctx:
         parts.append("## Репозиторий\n" + repo_ctx)
     if extra:

@@ -179,3 +179,114 @@ async def test_mock_manager_counts_batched_approvals(fast_mock):
     batch = "[от reviewer → manager]: APPROVED — coder1\n\nAPPROVED — coder2\n\n@manager"
     text, _ = await collect(p, agent="manager", messages=[{"role": "user", "content": batch}])
     assert text.startswith("@user Готово")
+
+
+# ------------------------------------------------------- tool calling
+
+from capricorn.providers import to_anthropic_messages, to_openai_messages  # noqa: E402
+
+TOOL_HISTORY = [
+    {"role": "user", "content": "почини"},
+    {"role": "assistant", "content": "Смотрю файл.", "tool_calls": [
+        {"id": "c1", "name": "read_file", "args": {"path": "a.py"}}]},
+    {"role": "tool", "results": [{"id": "c1", "name": "read_file", "content": "x = 1", "is_error": False}]},
+    {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c2", "name": "write_file", "args": {"path": "a.py", "content": "x = 2"}},
+        {"id": "c3", "name": "run_tests", "args": "битый json"}]},
+    {"role": "tool", "results": [
+        {"id": "c2", "name": "write_file", "content": "ok", "is_error": False},
+        {"id": "c3", "name": "run_tests", "content": "Ошибка: аргументы", "is_error": True}]},
+    {"role": "assistant", "content": ""},
+]
+SPECS = [{"name": "read_file", "description": "Прочитать", "parameters": {"type": "object", "properties": {}}}]
+
+
+def test_to_anthropic_messages():
+    out = to_anthropic_messages(TOOL_HISTORY)
+    assert [m["role"] for m in out] == ["user", "assistant", "user", "assistant", "user", "assistant"]
+    assert out[1]["content"] == [
+        {"type": "text", "text": "Смотрю файл."},
+        {"type": "tool_use", "id": "c1", "name": "read_file", "input": {"path": "a.py"}}]
+    assert out[2]["content"] == [{"type": "tool_result", "tool_use_id": "c1", "content": "x = 1", "is_error": False}]
+    assert [b["type"] for b in out[3]["content"]] == ["tool_use", "tool_use"]     # пустой текст не шлём
+    assert out[3]["content"][1]["input"] == {}                                      # битые аргументы
+    assert out[4]["content"][1]["is_error"] is True
+    assert out[5]["content"] == "…"                                                  # пустой ответ недопустим
+
+
+def test_to_openai_messages():
+    out = to_openai_messages("SYS", TOOL_HISTORY)
+    assert [m["role"] for m in out] == ["system", "user", "assistant", "tool", "assistant", "tool", "tool", "assistant"]
+    call = out[2]["tool_calls"][0]
+    assert call == {"id": "c1", "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "a.py"}'}}
+    assert out[3] == {"role": "tool", "tool_call_id": "c1", "content": "x = 1"}
+    assert out[4]["content"] is None
+    assert out[4]["tool_calls"][1]["function"]["arguments"] == "битый json"
+    assert out[7] == {"role": "assistant", "content": ""}
+
+
+async def test_anthropic_streams_tool_calls(http_mock):
+    body = sse(
+        {"type": "message_start", "message": {"usage": {"input_tokens": 3}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Читаю"}},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {}}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"pa'}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": 'th": "a.py"}'}},
+        {"type": "content_block_start", "index": 2,
+         "content_block": {"type": "tool_use", "id": "toolu_2", "name": "list_files", "input": {}}},
+        {"type": "message_delta", "usage": {"output_tokens": 9}},
+    )
+    reqs = http_mock(lambda r: httpx.Response(200, content=body))
+    chunks = [c async for c in AnthropicProvider("a", {"api_key": "k"}).stream(
+        model="m", system="S", messages=MSGS, temperature=0, max_tokens=10, agent="coder1",
+        tools=SPECS, tool_choice="none")]
+    assert chunks == ["Читаю",
+                      {"tool_calls": [{"id": "toolu_1", "name": "read_file", "args": {"path": "a.py"}},
+                                      {"id": "toolu_2", "name": "list_files", "args": {}}]},
+                      {"usage": {"in": 3, "out": 9}}]
+    sent = json.loads(reqs[0].content)
+    assert sent["tools"] == [{"name": "read_file", "description": "Прочитать",
+                              "input_schema": {"type": "object", "properties": {}}}]
+    assert sent["tool_choice"] == {"type": "none"}
+
+
+async def test_openai_streams_tool_calls(http_mock):
+    def d(**delta):
+        return {"choices": [{"delta": delta}]}
+    body = sse(
+        d(content="Ок"),
+        d(tool_calls=[{"index": 0, "id": "call_a", "type": "function",
+                       "function": {"name": "read_file", "arguments": ""}}]),
+        d(tool_calls=[{"index": 0, "function": {"arguments": '{"path":'}}]),
+        d(tool_calls=[{"index": 0, "function": {"arguments": ' "a.py"}'}}]),
+        d(tool_calls=[{"index": 1, "id": "call_b", "function": {"name": "search", "arguments": "{oops"}}]),
+        "[DONE]")
+    reqs = http_mock(lambda r: httpx.Response(200, content=body))
+    chunks = [c async for c in OpenAICompatProvider("o", {}).stream(
+        model="m", system="S", messages=MSGS, temperature=0, max_tokens=10, agent="coder1", tools=SPECS)]
+    assert chunks[0] == "Ок"
+    assert chunks[1] == {"tool_calls": [{"id": "call_a", "name": "read_file", "args": {"path": "a.py"}},
+                                        {"id": "call_b", "name": "search", "args": "{oops"}]}
+    sent = json.loads(reqs[0].content)
+    assert sent["tools"] == [{"type": "function", "function": SPECS[0]}]
+    assert sent["tool_choice"] == "auto"
+
+
+async def test_openai_without_tool_support_falls_back_to_text(http_mock):
+    def handler(req):
+        if "tools" in json.loads(req.content):
+            return httpx.Response(400, text='{"error": "model does not support tools"}')
+        return httpx.Response(200, content=sse(oa_chunk("текстом"), "[DONE]"))
+    reqs = http_mock(handler)
+    text, _ = await collect(OpenAICompatProvider("ollama", {}), tools=SPECS)
+    assert text == "текстом" and len(reqs) == 2
+    assert "tool_choice" not in json.loads(reqs[1].content)
+
+
+async def test_no_tools_means_no_tool_fields(http_mock):
+    reqs = http_mock(lambda r: httpx.Response(200, content=sse("[DONE]")))
+    await collect(OpenAICompatProvider("o", {}))
+    assert "tools" not in json.loads(reqs[0].content)

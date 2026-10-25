@@ -17,12 +17,20 @@ class Call:
     model: str
     system: str
     messages: list[dict]
+    tools: list[dict] | None = None
+    tool_choice: str = "auto"
+
+
+def tool(name: str, **args) -> dict:
+    """Ответ модели, вызывающий инструмент: tool("read_file", path="a.py")."""
+    return {"tool_calls": [{"name": name, "args": args}]}
 
 
 class ScriptedProvider(Provider):
-    """replies: {agent: str | callable | Exception | [ ...по одному на ход ]}.
+    """replies: {agent: ответ | [ ...по одному на вызов модели ]}.
 
-    callable(agent, last_incoming) -> str или awaitable[str]; исключение — бросается.
+    Ответ: str; callable(agent, last_incoming) -> ответ или awaitable; исключение — бросается;
+    dict {"text": str, "tool_calls": [{"name", "args", "id"?}]} — вызов инструментов.
     Когда список кончился, агент отвечает пустой строкой.
     """
 
@@ -34,21 +42,29 @@ class ScriptedProvider(Provider):
     def calls_for(self, agent: str) -> list[Call]:
         return [c for c in self.calls if c.agent == agent]
 
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent):
-        self.calls.append(Call(agent, model, system, [dict(m) for m in messages]))
+    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                     tools=None, tool_choice="auto"):
+        self.calls.append(Call(agent, model, system, [dict(m) for m in messages], tools, tool_choice))
         item = self.replies.get(agent, "")
         if isinstance(item, list):
             item = item.pop(0) if item else ""
         if isinstance(item, BaseException) or (isinstance(item, type) and issubclass(item, BaseException)):
             raise item
         if callable(item):
-            item = item(agent, messages[-1]["content"] if messages else "")
+            item = item(agent, messages[-1].get("content", "") if messages else "")
             if inspect.isawaitable(item):
                 item = await item
+        calls = []
+        if isinstance(item, dict):
+            calls = [{"id": c.get("id", f"t{len(self.calls)}_{i}"), "name": c["name"], "args": c.get("args", {})}
+                     for i, c in enumerate(item.get("tool_calls") or [])]
+            item = item.get("text", "")
         text = str(item)
         for i in range(0, len(text), 5):
             yield text[i:i + 5]
             await asyncio.sleep(0)
+        if calls:
+            yield {"tool_calls": calls}
         yield {"usage": {"in": 10, "out": len(text)}}
 
 

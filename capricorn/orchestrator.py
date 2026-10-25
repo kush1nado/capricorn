@@ -1,7 +1,7 @@
 """Оркестратор: агенты, шина сообщений, маршрутизация по @упоминаниям, бюджет ходов.
 
 UI-независим: всё, что происходит, отдаётся через emit(kind, **data).
-События: message, stream_start, stream_chunk, stream_end, status, system.
+События: message, stream_start, stream_chunk, stream_end, status, system, tool.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .config import Config
 from .gitinfo import GitWatcher
 from .prompts import system_prompt
 from .providers import Provider, ProviderError, build_providers
+from .tools import Toolbox
 
 USER = "user"
 
@@ -104,36 +105,73 @@ class Agent:
         parts.append("\n\n".join(m.as_incoming() for m in batch))
         self.history.append({"role": "user", "content": "\n\n---\n\n".join(parts)})
         self._trim()
+        base = len(self.history) - 1              # с этого индекса — всё, что добавит этот ход
 
         msg_id = next(self.orch.ids)
         self.orch.emit("stream_start", agent=self.name, msg_id=msg_id)
         self.set_status("thinking")
-        text = ""
+        text = ""         # текст текущего раунда; последний уходит команде
+        display = ""      # всё, что видно в панели: текст всех раундов + строки инструментов
+
+        def show(piece: str):
+            nonlocal display
+            display += piece
+            self.orch.emit("stream_chunk", agent=self.name, msg_id=msg_id, chunk=piece)
+
         try:
             provider = self.orch.provider_for(self.name)
+            tools = self.orch.toolbox.specs_for(self.name)
             system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
-                                   await self.orch.repo_context(), self.cfg.extra_prompt)
-            async for chunk in provider.stream(
-                    model=self.cfg.model_id, system=system, messages=self.history,
-                    temperature=self.cfg.temperature, max_tokens=self.cfg.max_tokens,
-                    agent=self.name):
-                if isinstance(chunk, dict):
-                    u = chunk.get("usage") or {}
-                    self.tokens_in += u.get("in", 0)
-                    self.tokens_out += u.get("out", 0)
-                    continue
-                if not text:
-                    self.set_status("typing")
-                text += chunk
-                self.orch.emit("stream_chunk", agent=self.name, msg_id=msg_id, chunk=chunk)
+                                   await self.orch.repo_context(), self.cfg.extra_prompt,
+                                   tools=[t["name"] for t in tools])
+            rounds = 0
+            while True:
+                last_round = rounds >= self.orch.cfg.tools.max_rounds
+                text, calls = "", []
+                async for chunk in provider.stream(
+                        model=self.cfg.model_id, system=system, messages=self.history,
+                        temperature=self.cfg.temperature, max_tokens=self.cfg.max_tokens,
+                        agent=self.name, tools=tools or None,
+                        tool_choice="none" if last_round else "auto"):
+                    if isinstance(chunk, dict):
+                        u = chunk.get("usage") or {}
+                        self.tokens_in += u.get("in", 0)
+                        self.tokens_out += u.get("out", 0)
+                        calls += chunk.get("tool_calls") or []
+                        continue
+                    if self.status != "typing":
+                        self.set_status("typing")
+                    text += chunk
+                    show(chunk)
+                if not calls or last_round:
+                    break
+                self.history.append({"role": "assistant", "content": text, "tool_calls": calls})
+                results = []
+                for call in calls:
+                    self.set_status("working")
+                    res = await self.orch.toolbox.run(self.name, call["name"], call["args"])
+                    results.append({"id": call["id"], "name": call["name"],
+                                    "content": res.content, "is_error": res.is_error})
+                    sep = "\n" if display and not display.endswith("\n") else ""
+                    show(f"{sep}» `{call['name']}` {res.summary}\n")
+                    self.orch.emit("tool", agent=self.name, name=call["name"], args=call["args"],
+                                   ok=not res.is_error, summary=res.summary)
+                    self.orch._log_event({"type": "tool", "agent": self.name, "name": call["name"],
+                                          "args": call["args"], "ok": not res.is_error,
+                                          "summary": res.summary})
+                self.history.append({"role": "tool", "results": results})
+                if text or display:
+                    show("\n")
+                rounds += 1
         except asyncio.CancelledError:
+            del self.history[base + 1:]           # не оставляем tool_calls без результатов
             text += "\n[прервано]"
             self.history.append({"role": "assistant", "content": text})
-            self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=text, to=[])
+            self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display + "\n[прервано]", to=[])
             self.set_status("stopped")
             raise
         except Exception as e:  # noqa: BLE001 — любая ошибка провайдера/конфига идёт в UI, цикл живёт
-            self.history.pop()                    # сохраняем чередование user/assistant
+            del self.history[base:]               # сохраняем чередование user/assistant
             self.pending = batch + self.pending   # можно повторить через /retry
             self.context = ctx + self.context
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text="", to=[])
@@ -145,7 +183,7 @@ class Agent:
         self.history.append({"role": "assistant", "content": text})
         clean = THINK_RE.sub("", text).strip()
         msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
-        self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=text, to=msg.to)
+        self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
         return True
@@ -170,6 +208,7 @@ class Orchestrator:
         self.providers: dict[str, Provider] = build_providers(cfg.providers)
         self.agents = {name: Agent(self, name) for name in cfg.agents}
         self.git = GitWatcher(repo)
+        self.toolbox = Toolbox(repo, cfg)
         self.ids = itertools.count(1)
         self.budget = cfg.budget
         self.running = asyncio.Event()
@@ -306,8 +345,11 @@ class Orchestrator:
         return str(p)
 
     def _log(self, msg: Message):
+        self._log_event(asdict(msg))
+
+    def _log_event(self, record: dict):
         try:
             with self.log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(asdict(msg), ensure_ascii=False) + "\n")
+                f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError:
             pass

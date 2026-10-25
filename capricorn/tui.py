@@ -10,6 +10,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
@@ -35,6 +36,7 @@ CODE_THEME = "fruity"
 SPIN = "░▒▓█▓▒"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
+ACTIVE = ("thinking", "typing", "working")     # working — агент выполняет инструмент
 
 HELP = """\
 [b]Ввод[/b]: текст → менеджеру; [#00e5ff]@architect @reviewer текст[/] → адресно; @coders, @all.
@@ -47,6 +49,7 @@ HELP = """\
   /attach <путь>                — приложить файл к следующему сообщению
   /branch <имя>                 — git switch (или ctrl+b)
   /zoom <агент|git|feed>        — развернуть панель (esc — назад)
+  /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
   /budget N  /help  /quit
 [b]Клавиши[/b]: F5 пауза · F8 стоп · ctrl+b ветки · alt+1..9 развернуть панель · esc свернуть"""
 
@@ -122,13 +125,13 @@ class AgentPanel(LogPanel):
     def _render_subtitle(self):
         icon = {"idle": "▫", "error": "×", "stopped": "■", "waiting budget": "‖"}.get(
             self.status, SPIN[self._spin % len(SPIN)])
-        self.set_class(self.status in ("thinking", "typing"), "active")
+        self.set_class(self.status in ACTIVE, "active")
         self.set_class(self.status == "error", "failed")
         self.border_subtitle = (f"{icon} {self.status.upper()} ┃ {self.model} ┃ "
                                 f"{k(self.tok[0])}↑ {k(self.tok[1])}↓")
 
     def _tick(self):
-        if self.status in ("thinking", "typing"):
+        if self.status in ACTIVE:
             self._spin += 1
             self._render_subtitle()
         for mid in list(self.dirty):
@@ -379,11 +382,19 @@ class CapricornApp(App):
     @work(exclusive=True, group="git")
     async def refresh_git(self):
         self.snapshot = await self.orch.git.snapshot()
-        self.query_one(GitPanel).show(self.snapshot)
+        try:
+            panel = self.query_one(GitPanel)
+        except NoMatches:            # экран уже разбирается (выход)
+            return
+        panel.show(self.snapshot)
 
     def update_status(self):
+        try:
+            status = self.query_one("#status", Static)
+        except NoMatches:            # интервал сработал во время выхода
+            return
         o = self.orch
-        busy = [a.name for a in o.agents.values() if a.status in ("thinking", "typing")]
+        busy = [a.name for a in o.agents.values() if a.status in ACTIVE]
         tin = sum(a.tokens_in for a in o.agents.values())
         tout = sum(a.tokens_out for a in o.agents.values())
         if not o.running.is_set():
@@ -395,7 +406,7 @@ class CapricornApp(App):
         att = f" ┃ ФАЙЛЫ {len(o.attachments)}" if o.attachments else ""
         mode = "COMPLEX ×3" if self.cfg.complex_mode else "STANDARD"
         sep = f" [{RED_DIM}]┃[/] "
-        self.query_one("#status", Static).update(
+        status.update(
             f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}РЕЖИМ [{BONE}]{mode}[/]{sep}"
             f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]{att}{sep}"
             f"[{STEEL}]F5 пауза · F8 стоп · ctrl+b ветки · /help[/]")
@@ -468,6 +479,16 @@ class CapricornApp(App):
         elif cmd == "model":
             name = self._agent(args[0]); o.set_model(name, args[1])
             self.panels[name].set_meta(model=args[1]); self.feed.system(f"{name} → {args[1]}")
+        elif cmd == "tools":
+            tc = self.cfg.tools
+            if not tc.enabled:
+                self.feed.system("инструменты выключены (tools.enabled: false)")
+            else:
+                cmdline = tc.test_command if isinstance(tc.test_command, str) else " ".join(tc.test_command)
+                lines = [f"{n:9} {', '.join(o.toolbox.allowed(n)) or '—'}" for n in o.roster]
+                lines.append(f"тесты: {cmdline if tc.run_tests else 'выключены'} · "
+                             f"запись: {'да' if tc.write else 'нет'} · раундов за ход: {tc.max_rounds}")
+                self.feed.system("\n".join(lines))
         elif cmd == "models":
             self.feed.system("\n".join(f"{n:9} {a.model}" for n, a in self.cfg.agents.items())
                              + "\nпровайдеры: " + ", ".join(o.providers))

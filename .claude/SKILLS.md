@@ -61,6 +61,18 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 2. Строка в `HELP` и в таблице команд в README.
 3. Тест: метод оркестратора отдельно и команда через `run_test` в `tests/test_tui.py`.
 
+## Новый инструмент агента
+
+1. Обработчик `async def _name(tb, args) -> ToolResult` в `tools.py`. Пути — только через `tb.path()`
+   (песочница и запрет `.git`), ошибки для модели — `raise ToolError(...)`.
+2. `ToolSpec` в `TOOLS` (JSON Schema с `required`), роль в `ROLE_TOOLS`. Если инструмент пишет, добавь его в `WRITE_TOOLS`.
+3. Строка в таблице инструментов в README. Подсказка в `prompts.TOOL_HINTS`, если нужна.
+4. Тесты в `tests/test_tools.py`: основной путь, выход за пределы репозитория, ошибки аргументов.
+   Сценарий агента — в `test_agents.py` через `helpers.tool(...)`.
+
+**Ловушки:** текст, который уходит модели, нормализуй к LF (`\n`). Не запускай модельные строки через shell.
+`asyncio` subprocess при таймауте нужно `kill()` + `wait()`, иначе процесс останется.
+
 ## Новый провайдер
 
 1. OpenAI-совместимый провайдер — это только запись в `config.example.yaml` (`type: openai`), код не нужен.
@@ -78,10 +90,14 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 
 ## Ловушки окружения (Windows)
 
-- Вывод pytest с кириллицей превращается в кракозябры: запускай с `PYTHONUTF8=1`.
+- Вывод pytest с кириллицей превращается в кракозябры: читать удобнее с `PYTHONUTF8=1`.
+  **Но перед коммитом прогоняй и без него** (как хук): `PYTHONUTF8=1` наследуют дочерние процессы, и баги
+  кодировки в subprocess-коде (`run_tests`) прячутся.
 - Shell-скрипты (`.githooks/*`) обязаны быть с LF, это закреплено в `.gitattributes`. С CRLF `sh` падает.
 - Классическая консоль (conhost) и Consolas: многих символов нет, Textual без подсказки выбирает 256 цветов.
   Это закрывают `capricorn/terminal.py` (truecolor) и тест на набор глифов.
+- Bash-heredoc в этой среде портит `\\n` внутри Python-строк: правки с экранированием делай через Edit/Write,
+  а не через `python - <<EOF`.
 - `Path.write_text` на Windows пишет CRLF. Для LF-файлов используй `open(..., newline="")`.
 - Подсказки в `capricorn --help` в некоторых консолях выводятся в неверной кодировке. Это консоль, не баг.
 - Хук запускает тесты с `GIT_INDEX_FILE`/`GIT_AUTHOR_*` в окружении. `conftest.py` вычищает все `GIT_*`.

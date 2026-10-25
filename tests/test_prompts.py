@@ -29,3 +29,22 @@ def test_repo_context_and_extra_appended_last():
 def test_every_role_has_prompt():
     for role in ROSTER + ["coder3"]:
         system_prompt(role, ROSTER, "ru", "")
+
+
+def test_tools_section_for_coder_with_write():
+    sp = system_prompt("coder1", ROSTER, "ru", "", tools=["read_file", "write_file", "edit_file", "run_tests"])
+    assert "## Инструменты\nДоступны: read_file, write_file, edit_file, run_tests." in sp
+    assert "write_file для новых" in sp and "run_tests" in sp
+    assert "git_diff" not in sp
+    assert "Инструментов записи у тебя нет" not in sp
+
+
+def test_coder_without_tools_gets_code_block_hint():
+    assert "Инструментов записи у тебя нет" in system_prompt("coder1", ROSTER, "ru", "")
+    assert "Инструментов записи у тебя нет" in system_prompt("tester", ROSTER, "ru", "", tools=["read_file"])
+    assert "Инструментов" not in system_prompt("architect", ROSTER, "ru", "")
+
+
+def test_reviewer_read_only_tools():
+    sp = system_prompt("reviewer", ROSTER, "ru", "", tools=["read_file", "git_diff"])
+    assert "git_diff" in sp and "write_file" not in sp and "Инструментов записи" not in sp

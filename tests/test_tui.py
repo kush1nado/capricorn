@@ -102,3 +102,31 @@ async def test_command_errors_are_shown_not_raised(ui, line, needle):
     app, pilot = ui
     await submit(pilot, line)
     assert any(needle in t and t.startswith("▲") for t in feed_texts(app)), feed_texts(app)[-1]
+
+
+async def test_tools_command(ui):
+    app, pilot = ui
+    await submit(pilot, "/tools")
+    out = feed_texts(app)[-1]
+    assert "coder1" in out and "write_file" in out
+    arch = [l for l in out.splitlines() if l.startswith("architect")][0]
+    assert "write_file" not in arch
+    assert "тесты: python -m pytest -q" in out
+    app.cfg.tools.enabled = False
+    await submit(pilot, "/tools")
+    assert "выключены" in feed_texts(app)[-1]
+
+
+async def test_working_status_counts_as_active(ui):
+    app, pilot = ui
+    app.panels["coder1"].set_meta(status="working")
+    assert app.panels["coder1"].has_class("active")
+
+
+async def test_timers_survive_teardown(ui):
+    """Интервалы могут сработать, когда виджеты уже сняты (выход из приложения)."""
+    app, pilot = ui
+    await app.query_one("#status").remove()
+    await app.query_one(GitPanel).remove()
+    app.update_status()
+    await app.refresh_git().wait()
