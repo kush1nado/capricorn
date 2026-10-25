@@ -1,5 +1,5 @@
 #!/bin/sh
-# Capricorn commit-msg: без Co-Authored-By, не пустое.
+# Capricorn commit-msg: без Co-Authored-By / Claude-Session, не пустое.
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
 if [ -x .venv/Scripts/python.exe ]; then PY=.venv/Scripts/python.exe

@@ -8,7 +8,10 @@ import re
 import sys
 from pathlib import Path
 
-FORBIDDEN = re.compile(r"^\s*co-authored-by:", re.I | re.M)
+FORBIDDEN = {
+    "Co-Authored-By": re.compile(r"^\s*co-authored-by:", re.I | re.M),
+    "Claude-Session": re.compile(r"^\s*claude-session:", re.I | re.M),
+}
 
 
 def problems(message: str) -> list[str]:
@@ -16,8 +19,9 @@ def problems(message: str) -> list[str]:
     out = []
     if not body.strip():
         out.append("пустое сообщение")
-    if FORBIDDEN.search(body):
-        out.append("строки Co-Authored-By в коммитах не пишем — убери её")
+    for name, rx in FORBIDDEN.items():
+        if rx.search(body):
+            out.append(f"строки {name} в коммитах не пишем — убери её")
     return out
 
 

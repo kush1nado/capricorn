@@ -32,3 +32,8 @@ def test_main_reads_file(tmp_path):
     assert commit_msg.main([str(f)]) == 1
     f.write_text("Fix\n", encoding="utf-8")
     assert commit_msg.main([str(f)]) == 0
+
+
+def test_claude_session_rejected():
+    msg = "Fix\n\nClaude-Session: https://claude.ai/code/session_x\n"
+    assert any("Claude-Session" in p for p in commit_msg.problems(msg))
