@@ -1,5 +1,7 @@
 # Capricorn — мультиагентная среда разработки в терминале
 
+[![tests](https://github.com/kush1nado/capricorn/actions/workflows/tests.yml/badge.svg)](https://github.com/kush1nado/capricorn/actions/workflows/tests.yml)
+
 Киберпанк-терминал в красно-чёрной корпоративной палитре. Команда агентов на одном экране: архитектор, менеджер, 2–3 кодера, ревьюер, тестировщик,
 плюс git-панель и общая лента. Агенты передают друг другу ход через `@упоминания`, спорят
 и критикуют — а ты в любой момент вмешиваешься из строки ввода.
@@ -15,10 +17,29 @@
 
 ## Запуск
 
-Windows: двойной клик по `Capricorn.cmd` (нужен `.venv`, см. «Разработка»).
+Работает на Windows, Linux и macOS (Python ≥ 3.10); тесты гоняются на всех трёх в CI.
+
+**Установка** (один раз, в корне проекта):
 
 ```bash
-pip install -e .
+python -m venv .venv
+.venv/bin/python -m pip install -e .           # Windows: .venv\Scripts\python -m pip install -e .
+```
+
+**Запуск:**
+
+| ОС | Как |
+|---|---|
+| Windows | двойной клик по `Capricorn.cmd` или `.venv\Scripts\capricorn` в консоли |
+| Linux, macOS | `.venv/bin/capricorn` или `source .venv/bin/activate`, затем `capricorn` |
+
+`Capricorn.cmd` — только для Windows (переключает консоль в UTF-8). На Linux и macOS он не нужен.
+На macOS стандартный Terminal.app не умеет truecolor — тема будет в упрощённой 256-цветной палитре;
+в iTerm2, Ghostty, WezTerm, Kitty всё как задумано.
+
+**Параметры:**
+
+```bash
 capricorn --mock                 # без ключей: заглушка разыгрывает работу команды
 cp config.example.yaml capricorn.yaml   # в корне своего репозитория; ключи — в env
 capricorn --repo ~/work/project  # реальные модели

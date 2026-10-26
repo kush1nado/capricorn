@@ -88,6 +88,15 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 - Не снимай скриншоты экрана владельца: окно может не выйти на передний план, и в кадр попадёт чужое.
   Цвета проверяй через `app.console.color_system` и `app.no_color`.
 
+## CI и кроссплатформенность
+
+- `.github/workflows/tests.yml`: Windows, Ubuntu и macOS на Python 3.10 и 3.13. Поднял `requires-python` — подними
+  и минимальную версию в матрице (это проверяет `tests/test_ci.py`). Версии пиши в кавычках.
+- Linux можно проверить локально через Docker (Docker Desktop должен быть запущен):
+  `docker run --rm -v "<repo>:/src:ro" python:3.10-slim sh -c '...'`. Копируй `/src` в контейнер без `.venv` и `.git`,
+  установи `git` и `pip install -e ".[dev]"`, затем запусти pytest.
+- Результат CI после push: `gh run list --limit 6`, разовая проверка без циклического опроса.
+
 ## Ловушки окружения (Windows)
 
 - Вывод pytest с кириллицей превращается в кракозябры: читать удобнее с `PYTHONUTF8=1`.
