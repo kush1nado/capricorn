@@ -350,3 +350,39 @@ async def test_tool_calls_are_logged(make_orch, isolated_home):
     recs = [json.loads(line) for line in orch.log_path.read_text(encoding="utf-8").splitlines()]
     assert {"type": "tool", "agent": "coder1", "name": "list_files", "args": {}, "ok": True,
             "summary": recs[1]["summary"]} == recs[1]
+
+
+async def test_cancelling_agent_loop_mid_turn_really_stops_it(make_orch):
+    """Регрессия: цикл агента глотал собственную отмену, если она приходила посреди хода
+    (except CancelledError предназначался для /stop) — задача не завершалась никогда."""
+    started = asyncio.Event()
+
+    async def hang(agent, last):
+        started.set()
+        await asyncio.Event().wait()
+
+    orch, _ = make_orch({"manager": hang})
+    orch.user_says("x")
+    await asyncio.wait_for(started.wait(), 5)
+    loop_task = orch._tasks[list(orch.agents).index("manager")]
+    loop_task.cancel()
+    done, _ = await asyncio.wait({loop_task}, timeout=3)
+    assert loop_task in done, "цикл агента не завершился после отмены"
+
+
+async def test_stop_still_keeps_loop_alive_after_fix(make_orch):
+    started = asyncio.Event()
+
+    async def hang(agent, last):
+        started.set()
+        await asyncio.Event().wait()
+
+    orch, _ = make_orch({"manager": [hang, "снова"]})
+    orch.user_says("x")
+    await asyncio.wait_for(started.wait(), 5)
+    orch.stop_all()
+    await settle(orch)
+    assert all(not t.done() for t in orch._tasks)
+    orch.user_says("y")
+    await settle(orch)
+    assert orch.agents["manager"].history[-1]["content"] == "снова"

@@ -76,7 +76,7 @@ def test_example_config_is_consistent():
     for name, a in cfg.agents.items():
         assert a.provider in cfg.providers, f"{name}: провайдер {a.provider} не описан"
     for name, p in cfg.providers.items():
-        assert p.get("type") in ("openai", "anthropic", "mock"), name
+        assert p.get("type") in ("openai", "anthropic", "mock", "codex", "claude-code"), name
 
 
 def test_tools_defaults():

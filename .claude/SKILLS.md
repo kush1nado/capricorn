@@ -99,6 +99,23 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   иначе имя аргумента инструмента (`agent`) столкнётся с параметром хелпера.
 - `gitinfo.run` убивает процесс по таймауту и отмене. Новый код с subprocess должен делать так же.
 
+## CLI-провайдеры (Codex, Claude Code)
+
+- `capricorn/cli_providers.py`, `native_tools = True`: наши инструменты им не передаются. Оркестратор передаёт
+  `workspace={"path", "write", "branch", "test_command", "worktrees_dir"}` (`Orchestrator.native_workspace`).
+- Codex: `codex exec --json -C <папка> -s read-only|workspace-write [resume <id>] -`, промпт идёт через stdin.
+  Флаги ставятся **до** `resume`, после него `-C` не принимается. На Windows CLI лежит в
+  `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`, а рядом должен быть `codex-code-mode-host.exe`: копия
+  в `~/.codex/.sandbox-bin` без хоста не может пользоваться инструментами.
+- Claude Code: `claude -p --output-format stream-json --verbose [--resume id]`. Убери `CLAUDECODE` из env,
+  иначе вложенный запуск откажется работать. Проверить вход: `claude -p ok --output-format json` → `is_error`.
+- Чтение событий — через `contextlib.aclosing`, при отмене или ошибке гаси дерево процессов (`_kill_tree`).
+- Тесты: `tests/fake_cli.py` пишет в лог argv, stdin и cwd и выдаёт события из JSON-сценария (фикстура `fake`).
+- Директивы `MERGE <агент>` и `SYNC` (`Orchestrator.run_directives`): ответ агенту на сообщение от git в тестах
+  делай без директивы, иначе цикл остановит только бюджет.
+- Живой прогон: `scripts/live_run.py` на временном репозитории (`%TEMP%\capricorn-live\demo`) с небольшим бюджетом.
+  Он тратит лимиты подписки владельца.
+
 ## Режимы --web / --desktop и сборка
 
 - `--web`: textual-serve запускает **отдельный процесс** Capricorn на каждую вкладку (`web.child_command`).

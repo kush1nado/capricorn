@@ -32,9 +32,14 @@ class ProviderError(RuntimeError):
 
 
 class Provider:
+    native_tools = False        # True — у провайдера свои инструменты (CLI-агенты), наши ему не нужны
+
     def __init__(self, name: str, conf: dict):
         self.name = name
         self.conf = conf
+
+    def reset(self, agent: str | None = None) -> None:
+        """Забыть состояние агента (у CLI-провайдеров — его сессию)."""
 
     async def stream(self, *, model: str, system: str, messages: list[dict],
                      temperature: float, max_tokens: int, agent: str,
@@ -337,7 +342,9 @@ class MockProvider(Provider):
 
 
 def build_providers(conf: dict) -> dict[str, Provider]:
-    kinds = {"anthropic": AnthropicProvider, "openai": OpenAICompatProvider, "mock": MockProvider}
+    from .cli_providers import ClaudeCodeProvider, CodexProvider
+    kinds = {"anthropic": AnthropicProvider, "openai": OpenAICompatProvider, "mock": MockProvider,
+             "codex": CodexProvider, "claude-code": ClaudeCodeProvider}
     out = {}
     for name, pc in conf.items():
         cls = kinds.get((pc or {}).get("type", "openai"))

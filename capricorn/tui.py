@@ -51,6 +51,7 @@ HELP = """\
   /zoom <агент|git|feed>        — развернуть панель (esc — назад)
   /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
   /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
+  /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
   /budget N  /help  /quit
 [b]Клавиши[/b]: F5 пауза · F8 стоп · ctrl+b ветки · alt+1..9 развернуть панель · esc свернуть"""
 
@@ -492,6 +493,8 @@ class CapricornApp(App):
                 self.feed.system("\n".join(lines))
         elif cmd == "worktrees":
             self.show_worktrees(args[0].lower() if args else "")
+        elif cmd == "merge":
+            self.merge_work(self._agent(args[0]))
         elif cmd == "models":
             self.feed.system("\n".join(f"{n:9} {a.model}" for n, a in self.cfg.agents.items())
                              + "\nпровайдеры: " + ", ".join(o.providers))
@@ -541,6 +544,19 @@ class CapricornApp(App):
                                  else "убирать нечего: у всех есть невлитая работа или worktree не созданы")
             else:
                 self.feed.system("\n".join(await wts.status(self.orch.roster)))
+        except Exception as e:  # noqa: BLE001
+            self.feed.system(f"▲ {e}", "error")
+        self.refresh_git()
+
+    @work(group="git")
+    async def merge_work(self, agent: str):
+        wts = self.orch.toolbox.worktrees
+        if not wts.active:
+            self.feed.system("worktree выключены — сливать нечего")
+            return
+        try:
+            res = await wts.merge(agent)
+            self.feed.system(("► " if res.ok else "▲ ") + res.text, "info" if res.ok else "error")
         except Exception as e:  # noqa: BLE001
             self.feed.system(f"▲ {e}", "error")
         self.refresh_git()

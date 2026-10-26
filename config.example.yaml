@@ -52,6 +52,13 @@ providers:
     api_key: lm-studio
   mock:                 # офлайн-заглушка для проверки интерфейса
     type: mock
+  # Агенты-CLI под твоей подпиской, без ключей API. У них свои инструменты (файлы, shell);
+  # модель: codex/default или codex/<id>, claude-code/default или claude-code/sonnet.
+  codex:                # Codex CLI (подписка ChatGPT); на Windows найдётся и в установке приложения Codex
+    type: codex
+    # command: C:\path\to\codex.exe
+  claude-code:          # Claude Code CLI (подписка Claude); сначала: claude → /login
+    type: claude-code
 
 # model: "<провайдер>/<id модели>"
 agents:

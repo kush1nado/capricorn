@@ -59,3 +59,21 @@ def test_worktree_hints_per_role():
     assert "merge_work(agent=" in mgr and 'worktree="coder1"' in mgr
     plain = system_prompt("reviewer", ROSTER, "ru", "", tools=["git_diff"], worktrees=False)
     assert "worktree" not in plain
+
+
+def test_native_section_for_cli_agents():
+    coder = system_prompt("coder1", ROSTER, "ru", "", native={
+        "path": "/r/.git/capricorn/worktrees/coder1", "write": True, "test_command": ["python", "-m", "pytest"],
+        "branch": "capricorn/coder1", "worktrees_dir": ".git/capricorn/worktrees"})
+    assert "Рабочая папка: /r/.git/capricorn/worktrees/coder1" in coder
+    assert "python -m pytest" in coder and "SYNC" in coder and "MERGE" not in coder
+    assert "write_file" not in coder                          # наши инструменты не упоминаем
+    rev = system_prompt("reviewer", ROSTER, "ru", "", native={
+        "path": "/r", "write": False, "test_command": "pytest", "branch": "", "worktrees_dir": ".git/capricorn/worktrees"})
+    assert "Только чтение" in rev and "git -C .git/capricorn/worktrees/coder1" in rev and "MERGE" not in rev
+    mgr = system_prompt("manager", ROSTER, "ru", "", native={
+        "path": "/r", "write": False, "test_command": "pytest", "branch": "", "worktrees_dir": ".git/capricorn/worktrees"})
+    assert "MERGE coder1" in mgr
+    plain = system_prompt("reviewer", ROSTER, "ru", "", native={
+        "path": "/r", "write": False, "test_command": "pytest", "branch": "", "worktrees_dir": ""})
+    assert "worktree" not in plain

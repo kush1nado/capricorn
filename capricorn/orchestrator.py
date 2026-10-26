@@ -19,6 +19,7 @@ from .gitinfo import GitWatcher
 from .prompts import system_prompt
 from .providers import Provider, ProviderError, build_providers
 from .tools import Toolbox
+from .worktrees import Outcome, is_writer
 
 USER = "user"
 
@@ -35,6 +36,7 @@ ALIASES = {
 MENTION_RE = re.compile(r"(?<![\w@])@([\wа-яё]+)", re.I)
 CODE_RE = re.compile(r"```.*?(```|$)|`[^`\n]*`", re.S)
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
+DIRECTIVE_RE = re.compile(r"^[ \t]*(MERGE[ \t]+(\w+)|SYNC)[ \t]*$", re.M)
 
 
 @dataclass
@@ -58,6 +60,7 @@ class Agent:
         self.context: list[Message] = []    # подслушанное (observe_all), без хода
         self.wake = asyncio.Event()
         self.gen_task: asyncio.Task | None = None
+        self._stop_requested = False        # отмену хода запросил /stop, а не отмена самого цикла
         self.status = "idle"
         self.tokens_in = 0
         self.tokens_out = 0
@@ -91,8 +94,11 @@ class Agent:
             try:
                 ok = await self.gen_task
             except asyncio.CancelledError:
-                pass
+                if not self._stop_requested:  # отменяют сам цикл (выход из приложения) — не глотаем
+                    self.gen_task.cancel()
+                    raise
             finally:
+                self._stop_requested = False
                 self.gen_task = None
             if ok and self.pending:           # после ошибки повтор — только /retry или новое сообщение
                 self.wake.set()
@@ -120,11 +126,14 @@ class Agent:
 
         try:
             provider = self.orch.provider_for(self.name)
-            tools = self.orch.toolbox.specs_for(self.name)
+            native = getattr(provider, "native_tools", False)    # CLI-агент со своими инструментами
+            tools = [] if native else self.orch.toolbox.specs_for(self.name)
+            extra = {"workspace": await self.orch.native_workspace(self.name)} if native else {}
             system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
                                    await self.orch.repo_context(), self.cfg.extra_prompt,
                                    tools=[t["name"] for t in tools],
-                                   worktrees=self.orch.toolbox.worktrees.active)
+                                   worktrees=self.orch.toolbox.worktrees.active,
+                                   native=extra.get("workspace"))
             rounds = 0
             while True:
                 last_round = rounds >= self.orch.cfg.tools.max_rounds
@@ -133,12 +142,17 @@ class Agent:
                         model=self.cfg.model_id, system=system, messages=self.history,
                         temperature=self.cfg.temperature, max_tokens=self.cfg.max_tokens,
                         agent=self.name, tools=tools or None,
-                        tool_choice="none" if last_round else "auto"):
+                        tool_choice="none" if last_round else "auto", **extra):
                     if isinstance(chunk, dict):
                         u = chunk.get("usage") or {}
                         self.tokens_in += u.get("in", 0)
                         self.tokens_out += u.get("out", 0)
                         calls += chunk.get("tool_calls") or []
+                        if chunk.get("note"):            # действие CLI-агента его же инструментом
+                            self.set_status("working")
+                            sep = "\n" if display and not display.endswith("\n") else ""
+                            show(f"{sep}» {chunk['note']}\n")
+                            self.orch._log_event({"type": "tool", "agent": self.name, "note": chunk["note"]})
                         continue
                     if self.status != "typing":
                         self.set_status("typing")
@@ -187,6 +201,7 @@ class Agent:
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
+        await self.orch.run_directives(self.name, clean)
         return True
 
     def _trim(self):
@@ -198,6 +213,7 @@ class Agent:
 
     def cancel(self):
         if self.gen_task and not self.gen_task.done():
+            self._stop_requested = True
             self.gen_task.cancel()
 
 
@@ -336,6 +352,54 @@ class Orchestrator:
         for a in self.agents.values():
             if name in (None, a.name):
                 a.history.clear(); a.pending.clear(); a.context.clear()
+        for p in self.providers.values():       # CLI-провайдеры забывают сессии
+            p.reset(name)
+
+    # ------------------------------------------------- CLI-агенты и git
+    async def native_workspace(self, agent: str) -> dict:
+        """Где работает CLI-агент и можно ли ему писать (как у наших инструментов: пишут кодеры и тестировщик)."""
+        tc = self.cfg.tools
+        write = tc.enabled and tc.write and is_writer(agent)
+        ws = await self.toolbox.workspace_for(agent, None) if tc.enabled else self.toolbox
+        wts = self.toolbox.worktrees
+        return {"path": str(ws.root), "write": write, "test_command": tc.test_command,
+                "branch": wts.branch(agent) if ws.label else "",
+                "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
+
+    def notify(self, agent: str, text: str, sender: str = "git"):
+        """Служебное сообщение агенту (результат слияния и т.п.) — оно же будит его на ход."""
+        msg = Message(id=next(self.ids), sender=sender, to=[agent], content=text)
+        self._log(msg)
+        self.emit("message", msg=msg)
+        if agent in self.agents:
+            self.agents[agent].pending.append(msg)
+            self.agents[agent].wake.set()
+
+    async def run_directives(self, agent: str, text: str):
+        """MERGE <агент> (менеджер) и SYNC (кодер/тестировщик) — git-операции для CLI-агентов,
+        которым песочница не даёт трогать .git. Вне блоков кода, отдельной строкой."""
+        wts = self.toolbox.worktrees
+        if not wts.active:
+            return
+        for m in DIRECTIVE_RE.finditer(CODE_RE.sub("", text)):
+            target = m.group(2)
+            try:
+                if target is not None:
+                    if agent != "manager":
+                        continue
+                    if target not in self.toolbox.writers():
+                        res = Outcome(False, f"нет ветки агента «{target}». Есть: {', '.join(self.toolbox.writers())}")
+                    else:
+                        res = await wts.merge(target)
+                else:
+                    if not is_writer(agent):
+                        continue
+                    res = await wts.sync(agent)
+            except Exception as e:  # noqa: BLE001 — git-ошибка не должна ронять цикл агента
+                res = Outcome(False, f"{type(e).__name__}: {e}")
+            self.emit("system", text=("» " if res.ok else "▲ ") + f"{m.group(1).split()[0]}: {res.text}",
+                      level="info" if res.ok else "error")
+            self.notify(agent, res.text)
 
     def attach(self, path: str) -> str:
         p = Path(self.repo, path) if not Path(path).is_absolute() else Path(path)

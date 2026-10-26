@@ -102,8 +102,32 @@ def tools_section(role: str, tools: list[str], worktrees: bool = False) -> str:
     return "\n".join(lines)
 
 
+def native_section(role: str, ws: dict) -> str:
+    """Для CLI-агентов (Codex, Claude Code): инструменты у них свои, объясняем рамки и директивы."""
+    lines = ["## Инструменты",
+             f"У тебя собственные инструменты агента. Рабочая папка: {ws['path']}."]
+    if ws["write"]:
+        tests = ws["test_command"] if isinstance(ws["test_command"], str) else " ".join(ws["test_command"])
+        lines.append(f"- Можешь читать и менять файлы в ней и запускать тесты ({tests}). "
+                     "В сообщении коллегам файлы целиком не вставляй — коротко: что сделал и где.")
+    else:
+        lines.append("- Только чтение: файлы не меняй, изучай код и отвечай по делу.")
+    if ws.get("branch"):
+        lines.append(f"- Это твоя ветка {ws['branch']} (отдельный git worktree): правки не видны другим, пока "
+                     "менеджер не вольёт их. Git-команды, меняющие репозиторий, не выполняй. Если менеджер просит "
+                     "обновить ветку — напиши отдельной строкой SYNC; конфликты появятся в файлах маркерами "
+                     "<<<<<<< — исправь их и снова напиши SYNC.")
+    elif ws.get("worktrees_dir"):
+        lines.append(f"- Кодеры и тестировщик работают в своих worktree: {ws['worktrees_dir']}/<агент> внутри "
+                     f"репозитория. Их изменения: git -C {ws['worktrees_dir']}/coder1 status и git -C ... diff.")
+        if role == "manager":
+            lines.append("- Чтобы влить работу агента после APPROVED от ревьюера, напиши отдельной строкой: "
+                         "MERGE coder1. Результат придёт сообщением от git.")
+    return "\n".join(lines)
+
+
 def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, extra: str = "",
-                  tools: list[str] | None = None, worktrees: bool = False) -> str:
+                  tools: list[str] | None = None, worktrees: bool = False, native: dict | None = None) -> str:
     base_role = "coder" if role.startswith("coder") else role
     roster_txt = "\n".join(f"- @{r} — {ROLE_TITLES.get(r, r)}{' (это ты)' if r == role else ''}"
                            for r in roster)
@@ -113,7 +137,7 @@ def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, ex
         ROLE_PROMPTS[base_role],
         PROTOCOL.format(roster=roster_txt, language=lang),
     ]
-    section = tools_section(role, tools or [], worktrees)
+    section = native_section(role, native) if native else tools_section(role, tools or [], worktrees)
     if section:
         parts.append(section)
     if repo_ctx:

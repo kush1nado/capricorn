@@ -170,3 +170,13 @@ def test_help_markup_renders():
     from capricorn.tui import HELP
     plain = Text.from_markup(HELP).plain
     assert "/worktrees [prune]" in plain and "/continue [N]" in plain
+
+
+async def test_merge_command(ui_git):
+    app, pilot = ui_git
+    await app.orch.toolbox.run("coder1", "write_file", {"path": "m.py", "content": "m"})
+    await submit(pilot, "/merge coder1")
+    await wait_for(pilot, lambda: any("влита" in t for t in feed_texts(app)))
+    assert (app.orch.toolbox.root / "m.py").exists()
+    await submit(pilot, "/merge nobody")
+    await wait_for(pilot, lambda: any("нет агента" in t for t in feed_texts(app)))
