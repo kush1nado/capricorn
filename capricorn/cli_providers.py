@@ -61,6 +61,7 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
 class AgentCLIProvider(Provider):
     native_tools = True
     label = "CLI"
+    readonly_shell = False      # может ли агент в режиме «только чтение» выполнять команды (git diff и т.п.)
 
     def __init__(self, name: str, conf: dict):
         super().__init__(name, conf)
@@ -137,6 +138,7 @@ class AgentCLIProvider(Provider):
 class CodexProvider(AgentCLIProvider):
     """codex exec --json: события thread.started / item.* / turn.completed|failed."""
     label = "Codex CLI"
+    readonly_shell = True       # -s read-only: команды выполняются, запись запрещена песочницей ОС
 
     def discover(self) -> str | None:
         found = shutil.which("codex")
@@ -196,6 +198,7 @@ class CodexProvider(AgentCLIProvider):
 
 READ_TOOLS = ["Read", "Glob", "Grep", "LS"]
 WRITE_TOOLS = ["Edit", "MultiEdit", "Write"]
+HIDDEN_TOOLS = {"TodoWrite"}            # внутреннее планирование Claude — в панели это шум
 
 
 class ClaudeCodeProvider(AgentCLIProvider):
@@ -241,7 +244,7 @@ class ClaudeCodeProvider(AgentCLIProvider):
                         if block.get("type") == "text" and block.get("text", "").strip():
                             yield ("\n\n" if said else "") + block["text"].strip()
                             said = True
-                        elif block.get("type") == "tool_use":
+                        elif block.get("type") == "tool_use" and block.get("name") not in HIDDEN_TOOLS:
                             inp = block.get("input") or {}
                             target = inp.get("file_path") or inp.get("path") or inp.get("pattern") or inp.get("command") or ""
                             yield {"note": f"{block.get('name')}: {_short(target)}"}

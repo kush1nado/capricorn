@@ -313,3 +313,30 @@ async def test_reset_forgets_cli_sessions(git_orch):
 def test_codex_note_shows_inner_command(raw, shown):
     from capricorn.cli_providers import command_text
     assert command_text(raw) == shown
+
+
+async def test_claude_hides_todowrite_notes(fake, tmp_path):
+    p = ClaudeCodeProvider("claude-code", {"command": fake([{"events": [
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "TodoWrite", "input": {"todos": []}},
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "a.py"}}]}},
+        {"type": "result", "is_error": False, "usage": {}}]}])})
+    out = await collect(p, workspace=ws(tmp_path, write=True))
+    assert {"note": "Edit: a.py"} in out and not any("TodoWrite" in str(c) for c in out)
+
+
+def test_readonly_shell_capability():
+    assert CodexProvider.readonly_shell is True          # песочница ОС: команды можно, запись нельзя
+    assert ClaudeCodeProvider.readonly_shell is False    # Bash в режиме чтения запрещён целиком
+
+
+async def test_native_workspace_shell_flag_depends_on_provider(git_orch):
+    orch, _, _ = git_orch()
+    orch.providers["codex"] = CodexProvider("codex", {})
+    orch.providers["claude-code"] = ClaudeCodeProvider("claude-code", {})
+    orch.cfg.agents["reviewer"].model = "claude-code/default"
+    orch.cfg.agents["architect"].model = "codex/default"
+    orch.cfg.agents["coder1"].model = "claude-code/default"
+    assert (await orch.native_workspace("reviewer"))["shell"] is False
+    assert (await orch.native_workspace("architect"))["shell"] is True
+    assert (await orch.native_workspace("coder1"))["shell"] is True       # пишущему — тесты в Bash

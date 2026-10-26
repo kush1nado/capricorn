@@ -77,3 +77,14 @@ def test_native_section_for_cli_agents():
     plain = system_prompt("reviewer", ROSTER, "ru", "", native={
         "path": "/r", "write": False, "test_command": "pytest", "branch": "", "worktrees_dir": ""})
     assert "worktree" not in plain
+
+
+def test_native_reviewer_without_shell_reads_files_instead_of_git():
+    rev = system_prompt("reviewer", ROSTER, "ru", "", native={
+        "path": "/r", "write": False, "shell": False, "test_command": "pytest", "branch": "",
+        "worktrees_dir": ".git/capricorn/worktrees"})
+    assert "git -C" not in rev and "читая файлы" in rev
+
+
+def test_protocol_forbids_echoing_header():
+    assert "[от" in system_prompt("manager", ROSTER, "ru", "") and "не пиши" in system_prompt("manager", ROSTER, "ru", "")

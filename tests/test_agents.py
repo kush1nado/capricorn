@@ -1,6 +1,8 @@
 """Живые ходы агентов на скриптованном провайдере."""
 import asyncio
 
+import pytest
+
 from capricorn.orchestrator import USER
 from helpers import kinds, messages, settle
 
@@ -386,3 +388,17 @@ async def test_stop_still_keeps_loop_alive_after_fix(make_orch):
     orch.user_says("y")
     await settle(orch)
     assert orch.agents["manager"].history[-1]["content"] == "снова"
+
+
+@pytest.mark.parametrize("reply", [
+    "**[от manager → user]:**\n\nГотово. @user",
+    "[от manager → user]: Готово. @user",
+    "  **[от manager → user]**: Готово. @user",
+])
+async def test_echoed_protocol_header_is_stripped(make_orch, reply):
+    """Модели копируют формат входящих «[от X → Y]:» в начало ответа — коллегам это не нужно."""
+    orch, events = make_orch({"manager": reply})
+    orch.user_says("x")
+    await settle(orch)
+    msg, = [m for m in messages(events) if m.sender == "manager"]
+    assert msg.content == "Готово. @user" and msg.to == ["user"]

@@ -36,6 +36,8 @@ ALIASES = {
 MENTION_RE = re.compile(r"(?<![\w@])@([\wа-яё]+)", re.I)
 CODE_RE = re.compile(r"```.*?(```|$)|`[^`\n]*`", re.S)
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
+# модели копируют формат входящих «[от X → Y]:» (иногда в **жирном**) в начало своего ответа
+ECHO_RE = re.compile(r"\A\s*(?:\*\*)?\[от [^\]\n]*\]:?(?:\*\*)?:?\s*")
 DIRECTIVE_RE = re.compile(r"^[ \t]*(MERGE[ \t]+(\w+)|SYNC)[ \t]*$", re.M)
 
 
@@ -196,7 +198,7 @@ class Agent:
 
         self.turns += 1
         self.history.append({"role": "assistant", "content": text})
-        clean = THINK_RE.sub("", text).strip()
+        clean = ECHO_RE.sub("", THINK_RE.sub("", text).strip())
         msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
@@ -362,7 +364,9 @@ class Orchestrator:
         write = tc.enabled and tc.write and is_writer(agent)
         ws = await self.toolbox.workspace_for(agent, None) if tc.enabled else self.toolbox
         wts = self.toolbox.worktrees
+        provider = self.provider_for(agent)
         return {"path": str(ws.root), "write": write, "test_command": tc.test_command,
+                "shell": write or getattr(provider, "readonly_shell", False),
                 "branch": wts.branch(agent) if ws.label else "",
                 "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
 
