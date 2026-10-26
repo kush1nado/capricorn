@@ -227,6 +227,16 @@ WRITE_TOOLS = ["Edit", "MultiEdit", "Write"]
 HIDDEN_TOOLS = {"TodoWrite"}            # внутреннее планирование Claude — в панели это шум
 
 
+def claude_error(text: str, model: str) -> str:
+    """Сырые ошибки API — в понятные. Главный случай: старый CLI под псевдонимом шлёт снятую модель (404)."""
+    m = re.search(r'not_found_error".*?"message":"model: ([^"]+)"', text)
+    if m:
+        return (f"Claude Code: модель «{model or 'default'}» недоступна — CLI отправил {m.group(1)}, "
+                f"а её уже нет. Обнови Claude CLI: npm install -g @anthropic-ai/claude-code "
+                f"(старая версия не знает актуальных моделей) или выбери агенту другую модель.")
+    return f"Claude Code: {_short(text, 300)}"
+
+
 class ClaudeCodeProvider(AgentCLIProvider):
     """claude -p --output-format stream-json: события system/init, assistant, result."""
     label = "Claude Code CLI"
@@ -276,7 +286,7 @@ class ClaudeCodeProvider(AgentCLIProvider):
                             yield {"note": f"{block.get('name')}: {_short(target)}"}
                 elif t == "result":
                     if ev.get("is_error"):
-                        raise ProviderError(f"Claude Code: {_short(ev.get('result') or ev.get('subtype'), 300)}")
+                        raise ProviderError(claude_error(str(ev.get("result") or ev.get("subtype")), model))
                     u = ev.get("usage") or {}
                     yield {"usage": {**anthropic_usage(u), "out": int(u.get("output_tokens") or 0)}}
 

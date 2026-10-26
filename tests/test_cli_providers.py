@@ -368,3 +368,16 @@ def test_cli_max_parallel_default_and_validation():
     assert CodexProvider("codex", {}).max_parallel == 2
     assert ClaudeCodeProvider("cc", {"max_parallel": 4}).max_parallel == 4
     assert CodexProvider("codex", {"max_parallel": 0}).max_parallel == 1
+
+
+async def test_claude_unknown_model_gets_human_hint(fake, tmp_path):
+    """Старый Claude CLI под псевдонимом opus шлёт снятую модель → 404. Подсказываем, что делать."""
+    err = ('API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: '
+           'claude-opus-4-1-20250805"},"request_id":"req_1"}')
+    p = ClaudeCodeProvider("claude-code", {"command": fake([{"events": [
+        {"type": "result", "subtype": "success", "is_error": True, "result": err}], "exit": 1}])})
+    with pytest.raises(ProviderError) as e:
+        await collect(p, workspace=ws(tmp_path), model="opus")
+    msg = str(e.value)
+    assert "модель «opus» недоступна" in msg and "npm install -g @anthropic-ai/claude-code" in msg
+    assert "claude-opus-4-1-20250805" in msg
