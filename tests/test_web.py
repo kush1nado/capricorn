@@ -228,14 +228,9 @@ def test_desktop_entry_defaults_to_desktop(monkeypatch, tmp_path):
     assert _run_entry("entry_desktop.py", monkeypatch, ["--web"]) == ["--web"]
 
 
-def test_desktop_entry_avoids_filesystem_root_and_app_bundle(monkeypatch, tmp_path, isolated_home):
-    root = os.path.abspath(os.sep)
-    monkeypatch.chdir(root)                    # так стартует .app на macOS по двойному клику
-    assert _run_entry("entry_desktop.py", monkeypatch, []) == ["--repo", str(isolated_home), "--desktop"]
-    bundle = tmp_path / "Capricorn.app" / "Contents" / "MacOS"
-    bundle.mkdir(parents=True)
-    monkeypatch.chdir(bundle)
-    assert _run_entry("entry_desktop.py", monkeypatch, []) == ["--repo", str(isolated_home), "--desktop"]
+def test_desktop_entry_leaves_project_choice_to_start_screen(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert _run_entry("entry_desktop.py", monkeypatch, []) == ["--desktop"]
     assert _run_entry("entry_desktop.py", monkeypatch, ["--repo", "x"]) == ["--repo", "x", "--desktop"]
 
 
@@ -298,3 +293,35 @@ def test_loader_is_packaged():
     root = Path(__file__).resolve().parent.parent
     assert "web_assets/*.html" in (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "web_assets" in (root / "packaging" / "capricorn.spec").read_text(encoding="utf-8")
+
+
+def test_cli_setup_rules(monkeypatch, tmp_path):
+    seen = {}
+
+    class FakeApp:
+        def __init__(self, cfg, repo, resume=False, setup=False, config_path=None):
+            seen.update(repo=repo, setup=setup, resume=resume)
+
+        def run(self):
+            pass
+
+    import capricorn.tui
+    monkeypatch.setattr(capricorn.tui, "CapricornApp", FakeApp)
+    monkeypatch.chdir(tmp_path)
+    cli.main([])
+    assert seen["setup"] is True and seen["repo"] == str(tmp_path.resolve())
+    cli.main(["--repo", str(tmp_path)])
+    assert seen["setup"] is False
+    for flag in ("--resume", "--no-setup", "--mock"):
+        cli.main([flag])
+        assert seen["setup"] is False, flag
+
+
+def test_web_child_gets_start_screen_without_repo(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(web, "run_desktop", lambda args: seen.update(args=args))
+    monkeypatch.chdir(tmp_path)
+    cli.main(["--desktop"])
+    assert "--repo" not in seen["args"]                       # дочерний процесс покажет стартовый экран
+    cli.main(["--desktop", "--no-setup"])
+    assert seen["args"][:2] == ["--repo", str(tmp_path.resolve())]

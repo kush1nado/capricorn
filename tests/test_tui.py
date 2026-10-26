@@ -337,3 +337,78 @@ async def test_focus_window_input_is_visible(ui):
     box = app.screen.query_one("#focus-input").region
     screen = app.screen.region
     assert box.height > 0 and box.bottom <= screen.bottom and box.y > 2
+
+
+# ------------------------------------------------------------ стартовый экран
+
+async def test_start_screen_picks_project_models_and_starts(tmp_path, fast_mock, monkeypatch):
+    from capricorn import start
+    from capricorn.tui import StartScreen
+    monkeypatch.setattr(start, "cli_available", lambda: {"claude-code": True, "codex": True})
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "capricorn.yaml").write_text("budget: 9\n", encoding="utf-8")
+    app = CapricornApp(load_config(), str(tmp_path / "work"), setup=True)
+    async with app.run_test(size=(140, 50)) as pilot:
+        assert isinstance(app.screen, StartScreen) and app.orch is None
+        await pilot.press("alt+space")                          # команды ещё нет — клавиши не ломают
+        assert app.orch is None
+        app.screen.query_one("#project").value = str(proj)
+        await pilot.pause()
+        names = [str(b.label) for b in app.screen.query("#presets Button")]
+        assert names == ["Claude", "Codex", "Смешанно", "Из конфига", "Заглушка"]
+        await pilot.click("#preset-2")                          # «Смешанно»
+        await pilot.pause()
+        assert app.screen.chosen_models()["coder1"] == "codex/default"
+        assert app.screen.chosen_models()["reviewer"] == "claude-code/sonnet"
+        await pilot.click("#go")
+        await pilot.pause()
+        assert not isinstance(app.screen, StartScreen)
+        assert app.orch is not None and app.repo == str(proj.resolve())
+        assert app.cfg.budget == 9                               # конфиг из папки проекта
+        assert app.cfg.agents["coder1"].model == "codex/default" and "codex" in app.orch.providers
+        app.orch.stop_all()
+    assert start.recent_projects()[0] == str(proj.resolve())
+    assert start.load_project_settings(proj)["models"]["reviewer"] == "claude-code/sonnet"
+
+
+async def test_start_screen_remembers_models_and_offers_resume(tmp_path, fast_mock, monkeypatch):
+    from capricorn import start
+    from capricorn.tui import StartScreen
+    monkeypatch.setattr(start, "cli_available", lambda: {"claude-code": False, "codex": True})
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    start.save_project_settings(proj, {"models": {"coder2": "codex/default"}})
+    first = CapricornApp(load_config(force_mock=True), str(proj))
+    async with first.run_test(size=(140, 50)) as pilot:
+        await submit(pilot, "прошлая задача")
+        await wait_for(pilot, lambda: any("Готово" in t for t in feed_texts(first)))
+        first.orch.stop_all()
+
+    app = CapricornApp(load_config(), str(proj), setup=True)
+    async with app.run_test(size=(140, 50)) as pilot:
+        await pilot.pause()
+        scr = app.screen
+        assert isinstance(scr, StartScreen)
+        assert scr.chosen_models()["coder2"] == "codex/default"   # запомнено для проекта
+        assert scr.chosen_models()["reviewer"] == "mock/mock"
+        resume = scr.query_one("#resume-session")
+        assert not resume.disabled and "прошлая задача" in str(resume.label)
+        resume.value = True
+        await pilot.pause()
+        await pilot.click("#go")
+        await pilot.pause()
+        assert any("прошлая задача" in t for t in feed_texts(app))
+        app.orch.stop_all()
+
+
+async def test_start_screen_rejects_missing_folder(tmp_path, fast_mock):
+    from capricorn.tui import StartScreen
+    app = CapricornApp(load_config(), str(tmp_path), setup=True)
+    async with app.run_test(size=(140, 50)) as pilot:
+        app.screen.query_one("#project").value = str(tmp_path / "nope")
+        await pilot.pause()
+        await pilot.click("#go")
+        await pilot.pause()
+        assert isinstance(app.screen, StartScreen) and app.orch is None
+        assert "папк" in str(app.screen.query_one("#warn").content)

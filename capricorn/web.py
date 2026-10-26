@@ -27,9 +27,10 @@ class ModeUnavailable(RuntimeError):
     """Режим нельзя запустить: не установлен нужный пакет."""
 
 
-def app_argv(repo: str, config: str | None, mock: bool, complex_mode: bool, resume: bool = False) -> list[str]:
-    """Аргументы терминального режима для дочернего процесса (без --web/--desktop)."""
-    args = ["--repo", os.path.abspath(repo)]
+def app_argv(repo: str | None, config: str | None, mock: bool, complex_mode: bool, resume: bool = False) -> list[str]:
+    """Аргументы терминального режима для дочернего процесса (без --web/--desktop).
+    repo=None — у дочернего процесса будет стартовый экран."""
+    args = ["--repo", os.path.abspath(repo)] if repo else []
     if config:
         args += ["--config", os.path.abspath(config)]
     if mock:

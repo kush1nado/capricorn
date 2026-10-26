@@ -37,16 +37,28 @@ python -m venv .venv
 На macOS стандартный Terminal.app не умеет truecolor — тема будет в упрощённой 256-цветной палитре;
 в iTerm2, Ghostty, WezTerm, Kitty всё как задумано.
 
+**Стартовый экран.** Без `--repo` Capricorn сначала спрашивает:
+- **проект** — путь (подставлена текущая папка), «обзор» по папкам или список недавних;
+- **модели агентов** — пресеты «Claude», «Codex», «Смешанно» (кодеры и тестировщик на Codex, остальные на
+  Claude), «Из конфига», «Заглушка», или своя модель каждому агенту. Показывается только то, что
+  запустится на этой машине (найден Claude CLI / Codex). Выбор запоминается для проекта;
+- **сессию** — новая или продолжить последнюю в этом проекте.
+
+Enter — запуск. Так «двойной клик по exe — и работаешь» без YAML.
+
 **Параметры:**
 
 ```bash
-capricorn --mock                 # без ключей: заглушка разыгрывает работу команды
-cp config.example.yaml capricorn.yaml   # в корне своего репозитория; ключи — в env
-capricorn --repo ~/work/project  # реальные модели
+capricorn                        # стартовый экран
+capricorn --repo ~/work/project  # сразу в проект, без стартового экрана
+capricorn --resume               # продолжить последнюю сессию проекта в текущей папке
+capricorn --mock                 # быстрое демо: заглушка разыгрывает работу команды
+capricorn --no-setup             # текущая папка, модели из конфига
 capricorn --complex              # сразу с третьим кодером
 ```
 
-Конфиг ищется в `./capricorn.yaml`, `./.capricorn/config.yaml`, `~/.config/capricorn/config.yaml`.
+Конфиг ищется в папке проекта (`capricorn.yaml`, `.capricorn/config.yaml`), затем в
+`~/.config/capricorn/config.yaml`; `--config файл` — явно.
 
 ### Три режима: терминал, браузер, окно
 
@@ -71,7 +83,7 @@ python scripts/build.py          # → dist/Capricorn/
 
 | ОС | Что получится |
 |---|---|
-| Windows | `dist/Capricorn/Capricorn.exe` — двойной клик открывает окно |
+| Windows | `dist/Capricorn/Capricorn.exe` — двойной клик: стартовый экран, затем окно команды |
 | macOS | `dist/Capricorn.app` |
 | Linux | `dist/Capricorn/Capricorn` |
 
@@ -83,10 +95,8 @@ CI собирает приложение на всех трёх ОС при ка
 (вкладка Actions → прогон → Artifacts). Сборка для macOS не подписана: при первом запуске —
 правый клик → «Открыть» (или `xattr -dr com.apple.quarantine Capricorn.app`).
 
-Двойной клик по приложению открывает команду на папке, где оно лежит (на macOS — на домашнем каталоге:
-`.app` стартует с корнем диска, а его агентам давать не стоит). Другой репозиторий —
-`Capricorn.exe --repo D:\work\project`; конфиг — `capricorn.yaml` рядом с приложением или
-`~/.config/capricorn/config.yaml`.
+Двойной клик по приложению открывает стартовый экран: выбери папку проекта и модели. Сразу в проект —
+`Capricorn.exe --repo D:\work\project`.
 
 ## Как это устроено
 

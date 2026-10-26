@@ -6,16 +6,18 @@ import os
 import sys
 
 from .config import load_config
+from .start import default_project_dir
 from .terminal import prepare_terminal
 
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="capricorn", description="Мультиагентная среда разработки")
-    ap.add_argument("--repo", default=os.getcwd(), help="путь к git-репозиторию (по умолч. текущая папка)")
+    ap.add_argument("--repo", help="папка проекта; без неё — стартовый экран (проект, модели, сессия)")
     ap.add_argument("--config", help="путь к YAML-конфигу")
     ap.add_argument("--mock", action="store_true", help="все агенты на офлайн-заглушке (проверка UI)")
     ap.add_argument("--complex", action="store_true", help="сразу включить третьего кодера")
     ap.add_argument("--resume", action="store_true", help="продолжить последнюю сессию проекта")
+    ap.add_argument("--no-setup", action="store_true", help="без стартового экрана (проект — текущая папка)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--web", action="store_true", help="открыть интерфейс в браузере")
     mode.add_argument("--desktop", action="store_true", help="открыть интерфейс в отдельном окне")
@@ -26,11 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    repo = os.path.abspath(args.repo) if args.repo else str(default_project_dir())   # не корень диска/.app
+    setup = args.repo is None and not (args.resume or args.no_setup or args.mock)
     cfg = load_config(args.config, force_mock=args.mock)   # ошибки конфига — сразу, до запуска сервера
 
     if args.web or args.desktop:
         from . import web
-        child = web.app_argv(args.repo, args.config, args.mock, args.complex, args.resume)
+        child = web.app_argv(args.repo if not setup else None, args.config, args.mock, args.complex, args.resume)
+        if not setup and not args.repo:
+            child = ["--repo", repo, *child]
         try:
             if args.web:
                 web.serve_web(web.child_command(child), args.port or web.free_port(), open_browser=not args.no_open)
@@ -45,7 +51,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg.complex_mode = True
     prepare_terminal()
     from .tui import CapricornApp
-    CapricornApp(cfg, os.path.abspath(args.repo), resume=args.resume).run()
+    if not args.config and not setup:
+        cfg = load_config(force_mock=args.mock, base=repo)       # конфиг из папки проекта
+        cfg.complex_mode = cfg.complex_mode or args.complex
+    CapricornApp(cfg, repo, resume=args.resume, setup=setup, config_path=args.config).run()
     return 0
 
 

@@ -16,13 +16,14 @@ from textual.css.query import NoMatches
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Input, Label, OptionList, Static
+from textual.widgets import Button, DirectoryTree, Input, Label, OptionList, RadioButton, RadioSet, Select, Static
 
-from .config import Config
+from . import start
+from .config import Config, load_config
 from .gitinfo import GitSnapshot
 from .orchestrator import USER, Message, Orchestrator
 from .prompts import ROLE_TITLES
-from .sessions import to_markdown
+from .sessions import SessionStore, to_markdown
 from .terminal import install_key_fixes, install_web_input_fix
 
 install_key_fixes()       # alt+цифры и alt+space иначе не доходят (см. terminal.py)
@@ -310,6 +311,164 @@ class BranchPicker(ModalScreen[str | None]):
         self.dismiss(self.branches[ev.option_index])
 
 
+class DirsOnly(DirectoryTree):
+    def filter_paths(self, paths):
+        return [p for p in paths if p.is_dir() and not p.name.startswith(".")]
+
+
+class StartScreen(ModalScreen[dict]):
+    """Стартовый экран: проект, модели агентов, новая или прошлая сессия."""
+    BINDINGS = [Binding("escape", "app.quit", "Выход")]
+    DEFAULT_CSS = """
+    StartScreen { align: center middle; background: #050506; }
+    StartScreen #start-box { width: 110; max-width: 98%; height: 96%; border: heavy #ff1a3c; background: #08080a; }
+    StartScreen #start-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    StartScreen .caption { color: #ff1a3c; text-style: bold; margin-top: 1; }
+    StartScreen #start-scroll { padding: 0 2; }
+    StartScreen #project-row { height: 3; }
+    StartScreen #project { width: 1fr; }
+    StartScreen #tree { height: 12; border: solid #3d0710; display: none; }
+    StartScreen #tree.open { display: block; }
+    StartScreen #recent { height: auto; max-height: 6; border: solid #3d0710; }
+    StartScreen #presets { height: 3; }
+    StartScreen #presets Button { min-width: 12; margin-right: 1; }
+    StartScreen #roles { layout: grid; grid-size: 2; grid-columns: 18 1fr; grid-rows: 3; height: auto; }
+    StartScreen #roles Label { padding: 1 0 0 0; }
+    StartScreen #warn { color: #f5d300; height: auto; }
+    StartScreen #actions { height: 3; margin-top: 1; }
+    StartScreen #go { min-width: 20; }
+    StartScreen Button { background: #2a0309; color: #e9e4dc; border: tall #5c0a16; }
+    StartScreen Button:hover, StartScreen Button:focus { background: #ff1a3c; color: #050506; }
+    """
+
+    def __init__(self, cfg: Config, default_dir: str, config_path: str | None = None):
+        super().__init__()
+        self.cfg = cfg
+        self.config_path = config_path
+        self.default_dir = default_dir
+        self.available = start.available_models(cfg)
+        self.preset_map: dict[str, dict[str, str]] = {}
+        self.latest_session: str | None = None
+        self.ready = False              # Input.Changed приходит ещё при монтировании — до готовности не реагируем
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="start-box"):
+            yield Static("▓ CAPRICORN // НОВЫЙ ЗАПУСК ┃ enter — запуск · esc — выход", id="start-title")
+            with VerticalScroll(id="start-scroll"):
+                yield Label("ПРОЕКТ — папка, с которой работает команда", classes="caption")
+                with Horizontal(id="project-row"):
+                    yield Input(self.default_dir, id="project", placeholder="путь к папке проекта")
+                    yield Button("ОБЗОР", id="browse")
+                yield DirsOnly(start.default_project_dir(), id="tree")
+                recent = start.recent_projects()
+                if recent:
+                    yield Label("НЕДАВНИЕ", classes="caption")
+                    yield OptionList(*recent, id="recent")
+                yield Label("МОДЕЛИ АГЕНТОВ", classes="caption")
+                yield Horizontal(id="presets")
+                with Container(id="roles"):
+                    options = [(label, model) for label, model in self.available]
+                    for role in self.cfg.agents:
+                        yield Label(ROLE_TITLES.get(role, role))
+                        yield Select(options, id=f"model-{role}", allow_blank=False, value=options[-1][1])
+                yield Label("СЕССИЯ", classes="caption")
+                with RadioSet(id="session"):
+                    yield RadioButton("новая", value=True, id="new-session")
+                    yield RadioButton("продолжить последнюю", id="resume-session", disabled=True)
+                yield Static("", id="warn")
+                with Horizontal(id="actions"):
+                    yield Button("► ЗАПУСК", id="go")
+                    yield Button("ВЫХОД", id="quit")
+
+    async def on_mount(self):
+        await self.refresh_project()
+        self.ready = True
+        self.query_one("#go").focus()
+
+    # --------------------------------------------------------- проект
+    def project_path(self) -> Path:
+        return Path(self.query_one("#project", Input).value.strip().strip('"')).expanduser()
+
+    async def refresh_project(self):
+        path = self.project_path()
+        warn = self.query_one("#warn", Static)
+        if not path.is_dir():
+            warn.update("▲ такой папки нет")
+            return
+        warn.update("")
+        cfg = self.cfg if self.config_path else load_config(base=path)
+        self.available = start.available_models(cfg)
+        self.preset_map = start.presets(cfg, self.available)
+        bar = self.query_one("#presets", Horizontal)
+        await bar.remove_children()             # асинхронно: иначе новые кнопки столкнутся id со старыми
+        await bar.mount_all([Button(name, id=f"preset-{i}") for i, name in enumerate(self.preset_map)])
+        saved = start.load_project_settings(path).get("models") or {}
+        options = [(label, model) for label, model in self.available]
+        have = {m for _, m in options}
+        for role, agent in cfg.agents.items():
+            sel = self.query_one(f"#model-{role}", Select)
+            sel.set_options(options)
+            want = saved.get(role) or agent.model
+            sel.value = want if want in have else "mock/mock"
+        self.latest_session = SessionStore(path).latest()
+        resume = self.query_one("#resume-session", RadioButton)
+        if self.latest_session:
+            info = next(s for s in SessionStore(path).list() if s.id == self.latest_session)
+            when = time.strftime("%d.%m %H:%M", time.localtime(info.updated))
+            resume.label = f"продолжить последнюю — {when}, {info.messages} сообщ. «{info.title[:40]}»"
+            resume.disabled = False
+        else:
+            resume.label = "продолжить последнюю (в этом проекте сессий нет)"
+            resume.value = False
+            resume.disabled = True
+            self.query_one("#new-session", RadioButton).value = True
+
+    @on(Input.Changed, "#project")
+    async def project_changed(self, _ev):
+        if self.ready:
+            await self.refresh_project()
+
+    @on(Input.Submitted, "#project")
+    def project_submitted(self, _ev):
+        self.go()
+
+    @on(DirectoryTree.DirectorySelected, "#tree")
+    def picked_dir(self, ev: DirectoryTree.DirectorySelected):
+        self.query_one("#project", Input).value = str(ev.path)
+
+    @on(OptionList.OptionSelected, "#recent")
+    def picked_recent(self, ev: OptionList.OptionSelected):
+        self.query_one("#project", Input).value = str(ev.option.prompt)
+
+    # --------------------------------------------------------- кнопки
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed):
+        bid = ev.button.id or ""
+        if bid == "browse":
+            self.query_one("#tree").toggle_class("open")
+        elif bid == "quit":
+            self.app.exit()
+        elif bid == "go":
+            self.go()
+        elif bid.startswith("preset-"):
+            models = list(self.preset_map.values())[int(bid.split("-", 1)[1])]
+            have = {m for _, m in self.available}
+            for role, model in models.items():
+                if model in have:
+                    self.query_one(f"#model-{role}", Select).value = model
+
+    def chosen_models(self) -> dict[str, str]:
+        return {role: self.query_one(f"#model-{role}", Select).value for role in self.cfg.agents}
+
+    def go(self):
+        path = self.project_path()
+        if not path.is_dir():
+            self.query_one("#warn", Static).update("▲ выбери существующую папку проекта")
+            return
+        resume = bool(self.latest_session) and self.query_one("#resume-session", RadioButton).value
+        self.dismiss({"repo": str(path.resolve()), "models": self.chosen_models(), "resume": resume})
+
+
 class FocusScreen(ModalScreen[None]):
     """Личное окно агента: разговор только с ним. Закрыли — агент подводит итог для команды."""
     BINDINGS = [
@@ -529,10 +688,13 @@ class CapricornApp(App):
         Binding("ctrl+q", "quit", "Выход"),
     ]
 
-    def __init__(self, cfg: Config, repo: str, resume: bool = False):
+    def __init__(self, cfg: Config, repo: str, resume: bool = False, setup: bool = False,
+                 config_path: str | None = None):
         super().__init__()
         self.cfg = cfg
         self.repo = repo
+        self.setup = setup              # показать стартовый экран (проект, модели, сессия)
+        self.config_path = config_path  # явный --config: не подменять конфигом проекта
         self.resume = resume            # продолжить последнюю сессию проекта
         self.orch: Orchestrator | None = None
         self.selected = "manager"       # панель, которую откроет alt+space
@@ -560,6 +722,27 @@ class CapricornApp(App):
     def on_mount(self):
         self.register_theme(CAPRICORN_THEME)
         self.theme = "capricorn"
+        if self.setup:
+            self.push_screen(StartScreen(self.cfg, self.repo, self.config_path), self._setup_done)
+        else:
+            self.start_team()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Пока открыт стартовый экран, команды нет — alt-клавиши приложения не срабатывают."""
+        if self.orch is None and action not in ("quit", "command_palette"):
+            return False
+        return True
+
+    def _setup_done(self, choice: dict | None):
+        if not choice:
+            return
+        self.repo = choice["repo"]
+        if not self.config_path:
+            self.cfg = load_config(base=self.repo)
+        start.apply_models(self.cfg, choice["models"])
+        start.save_project_settings(self.repo, {"models": choice["models"]})
+        start.remember_project(self.repo)
+        self.resume = choice["resume"]
         self.start_team()
 
     def start_team(self):

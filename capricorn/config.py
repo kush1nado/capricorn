@@ -73,10 +73,16 @@ CANDIDATES = [
 ]
 
 
-def load_config(path: str | None = None, force_mock: bool = False) -> Config:
+def load_config(path: str | None = None, force_mock: bool = False, base: str | Path | None = None) -> Config:
+    """base — папка проекта: относительные кандидаты (capricorn.yaml, .capricorn/config.yaml) ищутся в ней."""
     raw: dict = {}
     source = "defaults (mock)"
-    paths = [Path(path)] if path else CANDIDATES
+    if path:
+        paths = [Path(path)]
+    elif base is not None:
+        paths = [p if p.is_absolute() else Path(base) / p for p in CANDIDATES]
+    else:
+        paths = CANDIDATES
     for p in paths:
         if p.exists():
             raw = _expand(yaml.safe_load(p.read_text(encoding="utf-8")) or {})
