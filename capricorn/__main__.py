@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--config", help="путь к YAML-конфигу")
     ap.add_argument("--mock", action="store_true", help="все агенты на офлайн-заглушке (проверка UI)")
     ap.add_argument("--complex", action="store_true", help="сразу включить третьего кодера")
+    ap.add_argument("--resume", action="store_true", help="продолжить последнюю сессию проекта")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--web", action="store_true", help="открыть интерфейс в браузере")
     mode.add_argument("--desktop", action="store_true", help="открыть интерфейс в отдельном окне")
@@ -29,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.web or args.desktop:
         from . import web
-        child = web.app_argv(args.repo, args.config, args.mock, args.complex)
+        child = web.app_argv(args.repo, args.config, args.mock, args.complex, args.resume)
         try:
             if args.web:
                 web.serve_web(web.child_command(child), args.port or web.free_port(), open_browser=not args.no_open)
@@ -44,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.complex_mode = True
     prepare_terminal()
     from .tui import CapricornApp
-    CapricornApp(cfg, os.path.abspath(args.repo)).run()
+    CapricornApp(cfg, os.path.abspath(args.repo), resume=args.resume).run()
     return 0
 
 

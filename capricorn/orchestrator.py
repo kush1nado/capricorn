@@ -19,6 +19,8 @@ from .gitinfo import GitWatcher
 from .prompts import system_prompt
 from .providers import Provider, ProviderError, build_providers
 from .tools import Toolbox
+from .sessions import VERSION as SESSION_VERSION
+from .sessions import SessionStore
 from .worktrees import Outcome, is_writer
 
 USER = "user"
@@ -48,6 +50,7 @@ class Message:
     to: list[str]
     content: str
     ts: float = field(default_factory=time.time)
+    kind: str = "team"      # team — общая шина; private — личный диалог с user; handoff — итог для команды
 
     def as_incoming(self) -> str:
         return f"[от {self.sender} → {', '.join(self.to) or '—'}]: {self.content}"
@@ -188,6 +191,7 @@ class Agent:
             self.history.append({"role": "assistant", "content": text})
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display + "\n[прервано]", to=[])
             self.set_status("stopped")
+            self.orch.save()
             raise
         except Exception as e:  # noqa: BLE001 — любая ошибка провайдера/конфига идёт в UI, цикл живёт
             del self.history[base:]               # сохраняем чередование user/assistant
@@ -196,6 +200,7 @@ class Agent:
             self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text="", to=[])
             self.orch.emit("system", text=f"▲ {self.name}: {type(e).__name__}: {e}", level="error")
             self.set_status("error")
+            self.orch.save()
             return False
 
         self.turns += 1
@@ -206,6 +211,7 @@ class Agent:
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
         await self.orch.run_directives(self.name, clean)
+        self.orch.save()
         return True
 
     def _trim(self):
@@ -238,9 +244,73 @@ class Orchestrator:
         self._repo_ctx: tuple[float, str] = (0, "")
         self._budget_warned = False
         self._tasks: list[asyncio.Task] = []
-        log_dir = Path.home() / ".local" / "share" / "capricorn" / "sessions"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path = log_dir / time.strftime("%Y%m%d-%H%M%S.jsonl")
+        self.messages: list[Message] = []          # вся лента сессии — для сохранения и экспорта
+        self.store = SessionStore(repo)
+        self._save_warned = False
+        self.new_session()
+
+    # ------------------------------------------------------------ сессии
+    def new_session(self):
+        self.session_id = self.store.new_id()
+        self.created = time.time()
+        self.messages = []
+        self.log_path = self.store.dir(self.session_id) / "log.jsonl"
+
+    def snapshot(self) -> dict:
+        return {
+            "version": SESSION_VERSION, "id": self.session_id, "repo": str(self.repo),
+            "created": self.created, "updated": time.time(),
+            "budget": self.budget, "complex_mode": self.cfg.complex_mode,
+            "models": {n: a.model for n, a in self.cfg.agents.items()},
+            "messages": [asdict(m) for m in self.messages],
+            "agents": {n: {"history": a.history, "pending": [asdict(m) for m in a.pending],
+                           "context": [asdict(m) for m in a.context], "tokens_in": a.tokens_in,
+                           "tokens_out": a.tokens_out, "turns": a.turns}
+                       for n, a in self.agents.items()},
+            "cli_sessions": {name: dict(p.sessions) for name, p in self.providers.items() if hasattr(p, "sessions")},
+        }
+
+    def save(self):
+        try:
+            self.store.save(self.session_id, self.snapshot())
+        except (OSError, TypeError, ValueError) as e:
+            if not self._save_warned:
+                self._save_warned = True
+                self.emit("system", level="warn", text=f"▲ сессия не сохранилась: {e}")
+
+    def restore(self, state: dict) -> list[str]:
+        """Поднять сохранённую сессию. Очереди восстанавливаются без запуска ходов (/continue).
+        Возвращает предупреждения (например, модель недоступна — оставлена текущая)."""
+        warnings = []
+        self.session_id = state["id"]
+        self.created = state.get("created") or time.time()
+        self.log_path = self.store.dir(self.session_id) / "log.jsonl"
+        self.messages = [Message(**m) for m in state.get("messages") or []]
+        self.budget = int(state.get("budget", self.cfg.budget))
+        self.cfg.complex_mode = bool(state.get("complex_mode", self.cfg.complex_mode))
+        for name, model in (state.get("models") or {}).items():
+            if name not in self.cfg.agents:
+                continue
+            if model.split("/", 1)[0] in self.providers:
+                self.cfg.agents[name].model = model
+            else:
+                warnings.append(f"{name}: провайдер модели {model} не настроен — оставлена {self.cfg.agents[name].model}")
+        for name, st in (state.get("agents") or {}).items():
+            a = self.agents.get(name)
+            if a is None:
+                continue
+            a.history = list(st.get("history") or [])
+            a.pending = [Message(**m) for m in st.get("pending") or []]
+            a.context = [Message(**m) for m in st.get("context") or []]
+            a.tokens_in, a.tokens_out, a.turns = st.get("tokens_in", 0), st.get("tokens_out", 0), st.get("turns", 0)
+            a.status = "idle"
+        for pname, sessions in (state.get("cli_sessions") or {}).items():
+            p = self.providers.get(pname)
+            if p is not None and hasattr(p, "sessions"):
+                p.sessions = dict(sessions)
+        top = max([m.id for m in self.messages], default=0)
+        self.ids = itertools.count(top + 1)
+        return warnings
 
     # --------------------------------------------------------------- setup
     def start(self):
@@ -289,6 +359,7 @@ class Orchestrator:
         if sender == USER and not to:
             to = [self.cfg.default_target]
         msg = Message(id=msg_id or next(self.ids), sender=sender, to=to, content=text)
+        self.messages.append(msg)
         self._log(msg)
         if emit_message:
             self.emit("message", msg=msg)
@@ -307,7 +378,9 @@ class Orchestrator:
             self.attachments = []
         self.budget = max(self.budget, self.cfg.budget)
         self._budget_warned = False
-        return self.route(USER, text)
+        msg = self.route(USER, text)
+        self.save()
+        return msg
 
     def budget_exhausted(self):
         if not self._budget_warned:
@@ -348,9 +421,11 @@ class Orchestrator:
         if provider not in self.providers:
             raise ValueError(f"нет провайдера «{provider}». Есть: {', '.join(self.providers)}")
         self.cfg.agents[agent].model = model
+        self.save()
 
     def set_complex(self, on: bool):
         self.cfg.complex_mode = on
+        self.save()
 
     def reset(self, name: str | None = None):
         for a in self.agents.values():
@@ -358,6 +433,7 @@ class Orchestrator:
                 a.history.clear(); a.pending.clear(); a.context.clear()
         for p in self.providers.values():       # CLI-провайдеры забывают сессии
             p.reset(name)
+        self.save()
 
     # ------------------------------------------------- CLI-агенты и git
     async def native_workspace(self, agent: str) -> dict:
@@ -375,11 +451,13 @@ class Orchestrator:
     def notify(self, agent: str, text: str, sender: str = "git"):
         """Служебное сообщение агенту (результат слияния и т.п.) — оно же будит его на ход."""
         msg = Message(id=next(self.ids), sender=sender, to=[agent], content=text)
+        self.messages.append(msg)
         self._log(msg)
         self.emit("message", msg=msg)
         if agent in self.agents:
             self.agents[agent].pending.append(msg)
             self.agents[agent].wake.set()
+        self.save()
 
     async def run_directives(self, agent: str, text: str):
         """MERGE <агент> (менеджер) и SYNC (кодер/тестировщик) — git-операции для CLI-агентов,
@@ -420,6 +498,7 @@ class Orchestrator:
 
     def _log_event(self, record: dict):
         try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         except OSError:

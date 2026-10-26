@@ -85,7 +85,9 @@ def test_observe_all_gets_context_not_turn(orch):
 def test_messages_are_logged_as_jsonl(orch, isolated_home):
     orch.route(USER, "привет @architect")
     lines = orch.log_path.read_text(encoding="utf-8").splitlines()
-    assert orch.log_path.parent == isolated_home / ".local" / "share" / "capricorn" / "sessions"
+    # папка без git — данные проекта в домашнем каталоге, лог — в каталоге сессии
+    assert orch.log_path.parent.parent.parent.parent == isolated_home / ".local" / "share" / "capricorn" / "projects"
+    assert orch.log_path.parent.name == orch.session_id
     rec = json.loads(lines[0])
     assert (rec["sender"], rec["to"], rec["content"]) == (USER, ["architect"], "привет @architect")
 

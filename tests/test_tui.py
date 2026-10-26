@@ -180,3 +180,61 @@ async def test_merge_command(ui_git):
     assert (app.orch.toolbox.root / "m.py").exists()
     await submit(pilot, "/merge nobody")
     await wait_for(pilot, lambda: any("нет агента" in t for t in feed_texts(app)))
+
+
+async def test_session_commands(ui, tmp_path):
+    app, pilot = ui
+    o = app.orch
+    await submit(pilot, "сделай сервис")
+    await wait_for(pilot, lambda: any("Готово" in t for t in feed_texts(app)))
+    first = o.session_id
+
+    await submit(pilot, "/export notes/session.md")
+    out = tmp_path / "notes" / "session.md"
+    assert out.exists() and "сделай сервис" in out.read_text(encoding="utf-8")
+
+    await submit(pilot, "/new")
+    assert o.session_id != first and o.messages == []
+    assert not any("сделай сервис" in t for t in feed_texts(app))
+    assert all(not a.history for a in o.agents.values())
+
+    await submit(pilot, "/sessions")
+    assert first in feed_texts(app)[-1] and "сделай сервис" in feed_texts(app)[-1]
+
+    await submit(pilot, "/session last")
+    assert o.session_id == first
+    assert any("сделай сервис" in t for t in feed_texts(app))                   # лента перерисована
+    assert panel_texts(app, "architect")                                           # и панели агентов
+
+    await submit(pilot, "/session nope")
+    assert "нет сессии" in feed_texts(app)[-1]
+
+
+async def test_resume_flag_restores_last_session(tmp_path, fast_mock):
+    repo = str(tmp_path)
+    app = CapricornApp(load_config(force_mock=True), repo)
+    async with app.run_test(size=(180, 50)) as pilot:
+        await submit(pilot, "первая задача")
+        await wait_for(pilot, lambda: any("Готово" in t for t in feed_texts(app)))
+        sid = app.orch.session_id
+        app.orch.stop_all()
+    again = CapricornApp(load_config(force_mock=True), repo, resume=True)
+    async with again.run_test(size=(180, 50)) as pilot:
+        await pilot.pause()
+        assert again.orch.session_id == sid
+        assert any("первая задача" in t for t in feed_texts(again))
+        assert any("продолжаем сессию" in t for t in feed_texts(again))
+        again.orch.stop_all()
+    fresh = CapricornApp(load_config(force_mock=True), repo)
+    async with fresh.run_test(size=(180, 50)) as pilot:
+        await pilot.pause()
+        assert fresh.orch.session_id != sid
+        assert any("есть прошлая сессия" in t for t in feed_texts(fresh))
+        fresh.orch.stop_all()
+
+
+def test_help_mentions_session_commands():
+    from rich.text import Text
+    from capricorn.tui import HELP
+    plain = Text.from_markup(HELP).plain
+    assert "/export [файл]" in plain and "/session <id|last>" in plain

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shlex
 import time
+from pathlib import Path
 
 from rich.console import Group
 from rich.markdown import Markdown
@@ -19,6 +20,7 @@ from textual.widgets import Input, Label, OptionList, Static
 from .config import Config
 from .gitinfo import GitSnapshot
 from .orchestrator import USER, Message, Orchestrator
+from .sessions import to_markdown
 from .prompts import ROLE_TITLES
 
 # Палитра: корпоративный киберпанк — чёрный, кроваво-красный, сталь, неоновые акценты
@@ -52,6 +54,7 @@ HELP = """\
   /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
   /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
   /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
+  /sessions  /session <id|last>  /new  /export [файл] — сессии проекта
   /budget N  /help  /quit
 [b]Клавиши[/b]: F5 пауза · F8 стоп · ctrl+b ветки · alt+1..9 развернуть панель · esc свернуть"""
 
@@ -99,6 +102,10 @@ class LogPanel(VerticalScroll):
         item.update(renderable)
         if follow:
             self.call_after_refresh(self.scroll_end, animate=False)
+
+    def clear(self):
+        for item in list(self.query(Item)):
+            item.remove()
 
 
 class AgentPanel(LogPanel):
@@ -156,6 +163,15 @@ class AgentPanel(LogPanel):
         t.append(msg.sender, style=COLORS.get(msg.sender, "white"))
         t.append(f": {first[:160]}", style=f"italic {STEEL}")
         self.add(t, classes="incoming")
+
+    def own(self, text: str, to: list[str]):
+        """Готовое сообщение агента (при восстановлении сессии — без стриминга)."""
+        self.add(self._body(text, to=to), classes="own")
+
+    def clear(self):
+        super().clear()
+        self.streams.clear()
+        self.dirty.clear()
 
     def stream_start(self, mid: int):
         self.streams[mid] = (self.add(Text("▒▒▒", style=RED_DIM), classes="own"), "")
@@ -333,10 +349,11 @@ class CapricornApp(App):
         *[Binding(f"alt+{i}", f"zoom_index({i})", show=False) for i in range(1, 10)],
     ]
 
-    def __init__(self, cfg: Config, repo: str):
+    def __init__(self, cfg: Config, repo: str, resume: bool = False):
         super().__init__()
         self.cfg = cfg
         self.repo = repo
+        self.resume = resume            # продолжить последнюю сессию проекта
         self.orch: Orchestrator | None = None
         self.snapshot = GitSnapshot()
         self.panels: dict[str, AgentPanel] = {}
@@ -360,17 +377,49 @@ class CapricornApp(App):
     def on_mount(self):
         self.register_theme(CAPRICORN_THEME)
         self.theme = "capricorn"
+        self.start_team()
+
+    def start_team(self):
         self.orch = Orchestrator(self.cfg, self.repo, self.handle_orch_event)
-        for name, p in self.panels.items():
-            p.set_meta(model=self.cfg.agents[name].model)
-        self.apply_layout()
+        previous = self.orch.store.latest()
+        restored = None
+        if self.resume and previous:
+            restored = self.orch.store.load(previous)
+            warnings = self.orch.restore(restored)
         self.orch.start()
         self.feed.system(f"▓ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
-        self.feed.system("/help — команды. Напиши задачу — менеджер раздаст её команде.")
+        if restored:
+            self.replay()
+            for w in warnings:
+                self.feed.system(f"▲ {w}", "warn")
+            self.feed.system(f"► продолжаем сессию {self.orch.session_id}. /continue — доделать очередь")
+        else:
+            self.feed.system("/help — команды. Напиши задачу — менеджер раздаст её команде.")
+            if previous:
+                self.feed.system(f"есть прошлая сессия {previous} — /session last, список — /sessions")
+        self.sync_meta()
         self.refresh_git()
         self.set_interval(5, self.refresh_git)
         self.set_interval(0.5, self.update_status)
         self.query_one("#prompt").focus()
+
+    def sync_meta(self):
+        for name, p in self.panels.items():
+            a = self.orch.agents[name]
+            p.set_meta(model=self.cfg.agents[name].model, status=a.status, tok=(a.tokens_in, a.tokens_out))
+        self.apply_layout()
+
+    def replay(self):
+        """Перерисовать ленту и панели из сохранённой переписки."""
+        self.feed.clear()
+        for p in self.panels.values():
+            p.clear()
+        for msg in self.orch.messages:
+            self.show_message(msg, live=False)
+
+    def on_unmount(self):
+        if self.orch is not None:
+            self.orch.save()
 
     @property
     def feed(self) -> FeedPanel:
@@ -414,15 +463,19 @@ class CapricornApp(App):
             f"[{STEEL}]F5 пауза · F8 стоп · ctrl+b ветки · /help[/]")
 
     # ------------------------------------------------------ orchestrator
+    def show_message(self, msg: Message, live: bool = True):
+        self.feed.message(msg)
+        for n in msg.to:
+            if n in self.panels:
+                self.panels[n].incoming(msg)
+        if not live and msg.sender in self.panels and msg.content.strip():
+            self.panels[msg.sender].own(msg.content, msg.to)     # вживую своё сообщение пришло стримом
+        if live and USER in msg.to:
+            self.bell()
+
     def handle_orch_event(self, kind: str, **d):
         if kind == "message":
-            msg: Message = d["msg"]
-            self.feed.message(msg)
-            for n in msg.to:
-                if n in self.panels:
-                    self.panels[n].incoming(msg)
-            if USER in msg.to:
-                self.bell()
+            self.show_message(d["msg"])
         elif kind == "stream_start":
             self.panels[d["agent"]].stream_start(d["msg_id"])
         elif kind == "stream_chunk":
@@ -451,6 +504,23 @@ class CapricornApp(App):
                 self.feed.system(f"▲ {e}", "error")
         else:
             self.orch.user_says(text)
+
+    def open_session(self, sid: str):
+        o = self.orch
+        if sid == "last":
+            others = [s.id for s in o.store.list() if s.id != o.session_id]
+            if not others:
+                raise ValueError("других сессий в этом проекте нет")
+            sid = others[0]
+        state = o.store.load(sid)               # FileNotFoundError уйдёт в ленту как ошибка
+        o.save()
+        o.stop_all()
+        warnings = o.restore(state)
+        self.replay()
+        self.sync_meta()
+        for w in warnings:
+            self.feed.system(f"▲ {w}", "warn")
+        self.feed.system(f"► открыта сессия {sid}. /continue — доделать очередь")
 
     def _agent(self, name: str) -> str:
         if name not in self.orch.agents:
@@ -503,6 +573,32 @@ class CapricornApp(App):
         elif cmd == "reset":
             o.reset(self._agent(args[0]) if args else None)
             self.feed.system(f"память очищена: {args[0] if args else 'все'}")
+        elif cmd == "sessions":
+            infos = o.store.list()
+            if not infos:
+                self.feed.system("сохранённых сессий в этом проекте нет")
+            else:
+                self.feed.system("\n".join(
+                    f"{'▸' if s.id == o.session_id else ' '} {s.id}  {time.strftime('%d.%m %H:%M', time.localtime(s.updated))}"
+                    f"  {s.messages:3} сообщ.  {s.title or '—'}" for s in infos[:15])
+                    + "\n/session <id> или /session last — продолжить")
+        elif cmd == "session":
+            self.open_session(args[0])
+        elif cmd == "new":
+            o.save()
+            o.stop_all()
+            o.new_session()
+            o.reset()
+            o.budget = self.cfg.budget
+            self.replay()
+            self.sync_meta()
+            self.feed.system(f"► новая сессия {o.session_id}. Прошлая сохранена — /sessions")
+        elif cmd == "export":
+            o.save()
+            path = (Path(self.repo, args[0]) if args else o.store.dir(o.session_id) / f"capricorn-{o.session_id}.md")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(to_markdown(o.snapshot()), encoding="utf-8")
+            self.feed.system(f"► переписка сохранена: {path}")
         elif cmd == "attach":
             p = o.attach(args[0]); self.feed.system(f"+ приложу к следующему сообщению: {p}")
         elif cmd == "branch":
