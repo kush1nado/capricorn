@@ -159,6 +159,11 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 
 ## Ловушки окружения (Windows)
 
+- **У раннеров CI Windows английская локаль (cp1252).** Любой русский текст в stdout/stderr, например справка argparse,
+  там падает с UnicodeEncodeError. `__main__.utf8_stdio()` переключает вывод на UTF-8. Проверка:
+  `PYTHONIOENCODING=cp1252 python -m capricorn --help`. Собранный exe игнорирует `PYTHONIOENCODING`, поэтому
+  локально баг не виден.
+
 - Вывод pytest с кириллицей превращается в кракозябры: читать удобнее с `PYTHONUTF8=1`.
   **Но перед коммитом прогоняй и без него** (как хук): `PYTHONUTF8=1` наследуют дочерние процессы, и баги
   кодировки в subprocess-коде (`run_tests`) прячутся.

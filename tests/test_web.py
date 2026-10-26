@@ -325,3 +325,12 @@ def test_web_child_gets_start_screen_without_repo(monkeypatch, tmp_path):
     assert "--repo" not in seen["args"]                       # дочерний процесс покажет стартовый экран
     cli.main(["--desktop", "--no-setup"])
     assert seen["args"][:2] == ["--repo", str(tmp_path.resolve())]
+
+
+def test_help_survives_non_cyrillic_console():
+    """Регрессия: на английской Windows (CI) stdout в cp1252 — русская справка роняла --help (код 1)."""
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    env.pop("PYTHONUTF8", None)
+    r = subprocess.run([PY, "-m", "capricorn", "--help"], capture_output=True, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr.decode(errors="replace")[-500:]
+    assert b"--desktop" in r.stdout

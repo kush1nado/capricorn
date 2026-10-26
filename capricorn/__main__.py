@@ -26,7 +26,19 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def utf8_stdio() -> None:
+    """Справка и сообщения CLI — по-русски; на не-русской Windows stdout в cp1252 и падает на кириллице.
+    Пишем в UTF-8, а что не представимо — заменяем, но не роняем программу."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    utf8_stdio()
     args = build_parser().parse_args(argv)
     repo = os.path.abspath(args.repo) if args.repo else str(default_project_dir())   # не корень диска/.app
     setup = args.repo is None and not (args.resume or args.no_setup or args.mock)

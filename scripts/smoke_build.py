@@ -30,8 +30,10 @@ async def check(cli: Path) -> bool:
     import aiohttp
 
     out = subprocess.run([str(cli), "--help"], capture_output=True, timeout=60)
-    print("--help:", "ok" if out.returncode == 0 and b"--desktop" in out.stdout else f"FAIL {out.returncode}")
-    if out.returncode != 0:
+    ok = out.returncode == 0 and b"--desktop" in out.stdout
+    print("--help:", "ok" if ok else f"FAIL {out.returncode}")
+    if not ok:                              # в CI иначе не видно причины
+        print(out.stderr.decode("utf-8", errors="replace")[-2000:])
         return False
 
     repo = tempfile.mkdtemp(prefix="capricorn-smoke-")
