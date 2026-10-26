@@ -13,7 +13,8 @@ async def run(*args: str, cwd: str, timeout: float = 8) -> tuple[int, str]:
     и держит пайпы (например, git-команда при выходе из приложения)."""
     try:
         proc = await asyncio.create_subprocess_exec(
-            *args, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            *args, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,       # не наследуем stdin интерфейса
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except (FileNotFoundError, NotADirectoryError) as e:
         return 1, str(e)
     try:
@@ -128,6 +129,24 @@ class GitWatcher:
                 src = "glab"
         self._mr_cache = (time.time(), mrs, src)
         return mrs, src
+
+    async def commits(self, n: int = 60, ref: str = "HEAD") -> list[tuple[str, str, str, str]]:
+        """(полный хэш, когда, автор, тема) — для полноэкранного Git."""
+        code, out = await run("git", "log", "-n", str(n), "--pretty=format:%H\x1f%cr\x1f%an\x1f%s", ref,
+                              cwd=self.repo)
+        if code != 0:
+            return []
+        return [tuple(line.split("\x1f")) for line in out.splitlines() if line.count("\x1f") == 3]  # type: ignore[misc]
+
+    async def show(self, commit: str, limit: int = 200_000) -> str:
+        """Содержимое коммита: заголовок, статистика и diff."""
+        if not commit or not all(c in "0123456789abcdefABCDEF" for c in commit):
+            return f"некорректный хэш: {commit!r}"
+        code, out = await run("git", "show", "--stat", "--patch", "--no-color", "--format=fuller", commit,
+                              cwd=self.repo, timeout=20)
+        if code != 0:
+            return out[:500]
+        return out if len(out) <= limit else out[:limit] + "\n… [обрезано]"
 
     async def switch(self, branch: str) -> tuple[bool, str]:
         code, out = await run("git", "switch", branch, cwd=self.repo)

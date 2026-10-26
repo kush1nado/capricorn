@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from capricorn.config import load_config
-from capricorn.tui import CapricornApp, GitPanel, Item
+from capricorn.tui import PANEL_ORDER, CapricornApp, GitPanel, Item
 
 
 def feed_texts(app) -> list[str]:
@@ -238,3 +238,102 @@ def test_help_mentions_session_commands():
     from capricorn.tui import HELP
     plain = Text.from_markup(HELP).plain
     assert "/export [файл]" in plain and "/session <id|last>" in plain
+
+
+# ------------------------------------------------------- окна и alt-клавиши
+
+def selected(app):
+    return [k for k in PANEL_ORDER if app.query_one(f"#p-{k}").has_class("selected")]
+
+
+async def test_alt_selection_and_movement(ui):
+    app, pilot = ui
+    assert selected(app) == ["manager"]
+    await pilot.press("alt+2")
+    assert selected(app) == ["architect"]
+    await pilot.press("alt+right")
+    assert app.selected == "manager"
+    await pilot.press("alt+down")
+    assert app.selected == "reviewer"
+    await pilot.press("alt+left")
+    assert app.selected == "coder2"
+    await pilot.press("alt+6")                       # coder3 скрыт — выбор не меняется
+    assert app.selected == "coder2"
+    await pilot.press("alt+down")                    # под coder2 — лента
+    assert app.selected == "feed"
+
+
+async def test_alt_space_opens_private_window_and_hands_off(ui):
+    from capricorn.tui import FocusScreen
+    app, pilot = ui
+    app.query_one("#prompt").focus()
+    await pilot.press("alt+2", "alt+space")          # срабатывает даже из строки ввода
+    assert isinstance(app.screen, FocusScreen) and app.screen.agent == "architect"
+    app.screen.query_one("#focus-input").value = "как делим модули?"
+    await pilot.press("enter")
+    await wait_for(pilot, lambda: app.orch.agents["architect"].turns == 1)
+    await pilot.pause(0.2)
+    texts = [str(i.content) for i in app.screen.panel.query(Item)]
+    assert any("как делим модули?" in t for t in texts) and len(texts) >= 2
+    assert app.orch.agents["reviewer"].turns == 0               # @упоминания в личном не ушли
+
+    await pilot.press("escape")
+    assert not isinstance(app.screen, FocusScreen)
+    await wait_for(pilot, lambda: any(m.kind == "summary" for m in app.orch.messages))
+    assert any("итог личного обсуждения" in t for t in feed_texts(app))
+
+
+async def test_alt_space_in_window_closes_it(ui):
+    from capricorn.tui import FocusScreen
+    app, pilot = ui
+    await pilot.press("alt+space")
+    assert isinstance(app.screen, FocusScreen)
+    await pilot.press("alt+space")
+    assert not isinstance(app.screen, FocusScreen)
+    assert not any(m.kind == "handoff" for m in app.orch.messages)   # не говорили — итога нет
+
+
+async def test_git_screen_lists_and_shows_commits(ui_git):
+    from capricorn.tui import GitScreen
+    app, pilot = ui_git
+    await pilot.press("alt+1", "alt+space")
+    assert isinstance(app.screen, GitScreen)
+    await wait_for(pilot, lambda: app.screen.commits)
+    await wait_for(pilot, lambda: "a.txt" in app.screen.shown)
+    assert app.screen.branches == ["main"]
+    await pilot.press("alt+g")
+    assert not isinstance(app.screen, GitScreen)
+
+
+async def test_alt_shortcuts_for_commands(ui):
+    app, pilot = ui
+    await pilot.press("alt+p")
+    assert not app.orch.running.is_set()
+    await pilot.press("alt+p")
+    assert app.orch.running.is_set()
+    await pilot.press("alt+h")
+    assert any("alt+space" in t for t in feed_texts(app))
+
+
+async def test_movement_with_coder3_visible(ui):
+    app, pilot = ui
+    await submit(pilot, "/complex on")
+    await pilot.press("alt+5", "alt+right")
+    assert app.selected == "coder3"
+    await pilot.press("alt+down")
+    assert app.selected == "feed"
+    await submit(pilot, "/complex off")
+    await pilot.press("alt+6")
+    assert app.selected == "feed"                    # coder3 снова скрыт
+
+
+async def test_focus_window_input_is_visible(ui):
+    """Регрессия: .panel { height: 100% } из CSS приложения вытеснял строку ввода личного окна."""
+    from capricorn.tui import FocusScreen
+    app, pilot = ui
+    await pilot.press("alt+space")
+    await pilot.pause()
+    assert isinstance(app.screen, FocusScreen)
+    box = app.screen.query_one("#focus-input").region
+    screen = app.screen.region
+    assert box.height > 0 and box.bottom <= screen.bottom and box.y > 2

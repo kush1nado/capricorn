@@ -45,7 +45,7 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     try:
         if os.name == "nt":
             killer = await asyncio.create_subprocess_exec(
-                "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                "taskkill", "/PID", str(proc.pid), "/T", "/F", stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             await killer.wait()
         else:

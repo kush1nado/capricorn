@@ -50,10 +50,22 @@ class Message:
     to: list[str]
     content: str
     ts: float = field(default_factory=time.time)
-    kind: str = "team"      # team — общая шина; private — личный диалог с user; handoff — итог для команды
+    # team — общая шина; private — личный диалог с user; handoff — просьба подвести итог диалога;
+    # summary — этот итог, разосланный команде
+    kind: str = "team"
 
     def as_incoming(self) -> str:
+        if self.kind == "private":
+            return f"[лично от {self.sender}]: {self.content}"
+        if self.kind == "summary":
+            return f"[итог личного обсуждения {self.sender} с user]: {self.content}"
         return f"[от {self.sender} → {', '.join(self.to) or '—'}]: {self.content}"
+
+
+PERSONAL = ("private", "handoff")     # такие сообщения агент обрабатывает отдельным ходом и раньше командных
+HANDOFF_PROMPT = ("Личный диалог с пользователем закончен. Сформулируй итог для команды: какие решения "
+                  "приняты, о чём договорились, что и кому теперь делать. Только итог, без приветствий "
+                  "и без @упоминаний — его разошлют всем автоматически.")
 
 
 class Agent:
@@ -92,8 +104,14 @@ class Agent:
                 self.orch.budget_exhausted()
                 continue
             self.orch.budget -= 1
-            batch, self.pending = self.pending, []
-            ctx, self.context = self.context, []
+            personal = [m for m in self.pending if m.kind in PERSONAL]
+            if personal:                       # личный диалог — отдельным ходом, командное подождёт
+                batch = personal
+                self.pending = [m for m in self.pending if m.kind not in PERSONAL]
+                ctx = []
+            else:
+                batch, self.pending = self.pending, []
+                ctx, self.context = self.context, []
             ok = False
             self.gen_task = asyncio.create_task(self._turn(batch, ctx))
             try:
@@ -206,11 +224,19 @@ class Agent:
         self.turns += 1
         self.history.append({"role": "assistant", "content": text})
         clean = ECHO_RE.sub("", THINK_RE.sub("", text).strip())
-        msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
+        kinds = {m.kind for m in batch}
+        if "handoff" in kinds:                 # итог личного диалога — всей команде
+            msg = self.orch.share_summary(self.name, clean, msg_id)
+        elif "private" in kinds:               # ответ в личном канале — только пользователю
+            msg = self.orch.deliver(Message(id=msg_id, sender=self.name, to=[USER], content=clean, kind="private"),
+                                    emit_message=False)
+        else:
+            msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
-        await self.orch.run_directives(self.name, clean)
+        if msg.kind == "team":
+            await self.orch.run_directives(self.name, clean)
         self.orch.save()
         return True
 
@@ -245,6 +271,7 @@ class Orchestrator:
         self._budget_warned = False
         self._tasks: list[asyncio.Task] = []
         self.messages: list[Message] = []          # вся лента сессии — для сохранения и экспорта
+        self._private_marks: dict[str, int] = {}   # где в ленте открыли личный канал с агентом
         self.store = SessionStore(repo)
         self._save_warned = False
         self.new_session()
@@ -271,6 +298,8 @@ class Orchestrator:
         }
 
     def save(self):
+        if not self.messages and not any(a.history or a.pending for a in self.agents.values()):
+            return                      # пустую сессию (открыли и закрыли) не храним
         try:
             self.store.save(self.session_id, self.snapshot())
         except (OSError, TypeError, ValueError) as e:
@@ -380,6 +409,56 @@ class Orchestrator:
         self._budget_warned = False
         msg = self.route(USER, text)
         self.save()
+        return msg
+
+    # ----------------------------------------------- личный канал с агентом
+    def deliver(self, msg: Message, emit_message: bool = True, wake: bool = True) -> Message:
+        """Сообщение с заранее известными адресатами — без разбора @упоминаний и подслушивания."""
+        self.messages.append(msg)
+        self._log(msg)
+        if emit_message:
+            self.emit("message", msg=msg)
+        for name in msg.to:
+            if name in self.agents:
+                self.agents[name].pending.append(msg)
+                if wake:
+                    self.agents[name].wake.set()
+        return msg
+
+    def open_private(self, agent: str):
+        self._private_marks[agent] = len(self.messages)
+
+    def private_says(self, agent: str, text: str) -> Message:
+        if agent not in self.agents:
+            raise ValueError(f"нет агента «{agent}»")
+        self.budget = max(self.budget, self.cfg.budget)
+        self._budget_warned = False
+        msg = self.deliver(Message(id=next(self.ids), sender=USER, to=[agent], content=text, kind="private"))
+        self.save()
+        return msg
+
+    def end_private(self, agent: str) -> bool:
+        """Окно агента закрыли. Если поговорили — агент подводит итог, и он уходит команде."""
+        mark = self._private_marks.pop(agent, len(self.messages))
+        talked = any(m.kind == "private" and m.sender == USER and m.to == [agent] for m in self.messages[mark:])
+        if talked:
+            self.deliver(Message(id=next(self.ids), sender=USER, to=[agent], content=HANDOFF_PROMPT, kind="handoff"))
+            self.save()
+        return talked
+
+    def share_summary(self, agent: str, text: str, msg_id: int) -> Message:
+        """Итог разосылается всем как контекст (без лишних ходов); менеджер получает его как задачу."""
+        others = [n for n in self.roster if n != agent]
+        msg = Message(id=msg_id, sender=agent, to=others, content=text, kind="summary")
+        self.messages.append(msg)
+        self._log(msg)
+        for name in others:
+            target = self.agents[name]
+            if name == self.cfg.default_target:
+                target.pending.append(msg)
+                target.wake.set()
+            else:
+                target.context.append(msg)
         return msg
 
     def budget_exhausted(self):

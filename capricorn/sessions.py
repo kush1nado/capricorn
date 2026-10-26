@@ -24,6 +24,7 @@ def project_dir(repo: str | Path) -> Path:
     repo = Path(repo).resolve()
     try:
         r = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=repo, capture_output=True,
+                           stdin=subprocess.DEVNULL,
                            text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         r = None

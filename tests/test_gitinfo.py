@@ -129,3 +129,17 @@ async def test_run_kills_process_on_cancel(tmp_path):
         pass
     await asyncio.sleep(0.3)
     assert not _alive(pid)
+
+
+async def test_commits_and_show(tmp_path):
+    repo = tmp_path / "r"
+    init_repo(repo)
+    commit(repo, "a.py", "x = 1\n", "первый")
+    commit(repo, "a.py", "x = 2\n", "второй")
+    w = GitWatcher(str(repo))
+    cs = await w.commits()
+    assert [c[3] for c in cs] == ["второй", "первый"] and len(cs[0][0]) == 40
+    shown = await w.show(cs[0][0])
+    assert "второй" in shown and "-x = 1" in shown and "+x = 2" in shown and "a.py" in shown
+    assert "некорректный" in await w.show("HEAD; rm -rf /")
+    assert await GitWatcher(str(tmp_path)).commits() == []

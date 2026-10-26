@@ -7,12 +7,13 @@ from pathlib import Path
 
 from rich.console import Group
 from rich.markdown import Markdown
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.containers import Container, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Input, Label, OptionList, Static
@@ -20,8 +21,12 @@ from textual.widgets import Input, Label, OptionList, Static
 from .config import Config
 from .gitinfo import GitSnapshot
 from .orchestrator import USER, Message, Orchestrator
-from .sessions import to_markdown
 from .prompts import ROLE_TITLES
+from .sessions import to_markdown
+from .terminal import install_key_fixes, install_web_input_fix
+
+install_key_fixes()       # alt+цифры и alt+space иначе не доходят (см. terminal.py)
+install_web_input_fix()   # Windows: иначе Esc в окне/браузере срабатывает только со следующей клавишей
 
 # Палитра: корпоративный киберпанк — чёрный, кроваво-красный, сталь, неоновые акценты
 RED = "#ff1a3c"        # основной
@@ -56,7 +61,12 @@ HELP = """\
   /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
   /sessions  /session <id|last>  /new  /export [файл] — сессии проекта
   /budget N  /help  /quit
-[b]Клавиши[/b]: F5 пауза · F8 стоп · ctrl+b ветки · alt+1..9 развернуть панель · esc свернуть"""
+[b]Клавиши[/b] (все через alt):
+  alt+1..9, alt+стрелки — выбрать панель     alt+space (или alt+o) — открыть её окно
+  в окне агента — личный разговор; esc закрывает окно, итог уходит команде
+  alt+g — полноэкранный Git (ветки, коммиты)   alt+z — развернуть панель, esc — свернуть
+  alt+p пауза · alt+s стоп · alt+b ветки · alt+w worktree · alt+n новая сессия · alt+e экспорт · alt+h справка
+  (F5/F8/ctrl+b тоже работают; если терминал перехватывает alt+space — жми alt+o)"""
 
 
 def ago(ts: float) -> str:
@@ -77,8 +87,8 @@ class LogPanel(VerticalScroll):
     can_focus = True
     ALLOW_MAXIMIZE = True
 
-    def __init__(self, key: str, title: str, index: int):
-        super().__init__(id=f"p-{key}", classes="panel")
+    def __init__(self, key: str, title: str, index: int, wid: str | None = None):
+        super().__init__(id=wid or f"p-{key}", classes="panel")
         self.key = key
         self.index = index
         self.border_title = f"▓ {index:02d} // {title.upper()}"
@@ -109,8 +119,8 @@ class LogPanel(VerticalScroll):
 
 
 class AgentPanel(LogPanel):
-    def __init__(self, key: str, index: int):
-        super().__init__(key, ROLE_TITLES[key], index)
+    def __init__(self, key: str, index: int, wid: str | None = None):
+        super().__init__(key, ROLE_TITLES[key], index, wid)
         self.styles.border_title_color = COLORS[key].replace("bold ", "")
         self.streams: dict[int, tuple[Item, str]] = {}
         self.dirty: set[int] = set()
@@ -164,6 +174,12 @@ class AgentPanel(LogPanel):
         t.append(f": {first[:160]}", style=f"italic {STEEL}")
         self.add(t, classes="incoming")
 
+    def user_line(self, text: str):
+        """Реплика пользователя целиком — в личном окне агента."""
+        t = Text("▸ ты: ", style=f"bold {RED}")
+        t.append(text, style=f"bold {BONE}")
+        self.add(t, classes="incoming")
+
     def own(self, text: str, to: list[str]):
         """Готовое сообщение агента (при восстановлении сессии — без стриминга)."""
         self.add(self._body(text, to=to), classes="own")
@@ -192,12 +208,25 @@ class AgentPanel(LogPanel):
 
 class FeedPanel(LogPanel):
     def message(self, msg: Message):
+        if msg.kind == "handoff":           # служебная просьба подвести итог — в ленте не нужна
+            return
         t = Text(f"{ago(msg.ts)} ", style="#4a4f57")
         t.append(msg.sender, style=COLORS.get(msg.sender, "white"))
         t.append(" ▸ " if msg.to else " · ", style=STEEL)
+        if msg.kind == "summary":
+            t.append("все", style=BONE)
+            t.append("  ◂ итог личного обсуждения\n", style=RED)
+            t.append(msg.content.strip(), style=BONE)
+            self.add(t, classes="hl")
+            return
         for i, n in enumerate(msg.to):
             t.append(("" if i == 0 else ", ") + n, style=COLORS.get(n, "white"))
         body = msg.content.strip()
+        if msg.kind == "private":           # сам разговор — в окне агента, здесь только след
+            first = body.splitlines()[0] if body else ""
+            t.append(f"  · лично · {first[:100]}", style="#4a4f57")
+            self.add(t)
+            return
         if msg.sender == USER or USER in msg.to:
             t.append("\n" + body, style=f"bold {BONE}" if USER in msg.to else BONE)
         else:
@@ -281,6 +310,138 @@ class BranchPicker(ModalScreen[str | None]):
         self.dismiss(self.branches[ev.option_index])
 
 
+class FocusScreen(ModalScreen[None]):
+    """Личное окно агента: разговор только с ним. Закрыли — агент подводит итог для команды."""
+    BINDINGS = [
+        Binding("escape", "close", "Закрыть"),
+        Binding("alt+space", "close", show=False, priority=True),
+        Binding("alt+o", "close", show=False, priority=True),
+    ]
+    DEFAULT_CSS = """
+    FocusScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
+    FocusScreen > Vertical { width: 96%; height: 94%; border: heavy #ff1a3c; background: #08080a; }
+    FocusScreen #focus-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    FocusScreen .panel { border: none; height: 1fr; }
+    FocusScreen #focus-input { border: heavy #ff1a3c; background: #08080a; color: #e9e4dc; }
+    """
+
+    def __init__(self, agent: str):
+        super().__init__()
+        self.agent = agent
+        self.panel = AgentPanel(agent, PANEL_ORDER.index(agent) + 1, wid=f"f-{agent}")
+
+    def compose(self) -> ComposeResult:
+        title = ROLE_TITLES[self.agent].upper()
+        with Vertical():
+            yield Static(f"▓ {title} // ЛИЧНЫЙ КАНАЛ ┃ видишь только ты ┃ esc — закрыть, итог уйдёт команде",
+                         id="focus-title")
+            yield self.panel
+            yield PromptInput(id="focus-input", placeholder=f"▸ лично для: {ROLE_TITLES[self.agent]}…")
+
+    def on_mount(self):
+        a = self.app.orch.agents[self.agent]
+        self.panel.set_meta(model=self.app.cfg.agents[self.agent].model, status=a.status,
+                            tok=(a.tokens_in, a.tokens_out))
+        for msg in self.app.orch.messages:          # прошлые личные разговоры с этим агентом
+            if msg.kind != "private":
+                continue
+            if msg.sender == USER and msg.to == [self.agent]:
+                self.panel.user_line(msg.content)
+            elif msg.sender == self.agent:
+                self.panel.own(msg.content, [])
+        self.query_one("#focus-input").focus()
+
+    @on(Input.Submitted, "#focus-input")
+    def said(self, ev: Input.Submitted):
+        text = ev.value.strip()
+        ev.input.value = ""
+        if text:
+            ev.input.remember(text)
+            self.app.orch.private_says(self.agent, text)
+
+    def action_close(self):
+        self.dismiss(None)
+
+
+class GitScreen(ModalScreen[None]):
+    """Полноэкранный Git: ветки (enter — переключить) и коммиты (enter/стрелки — содержимое)."""
+    BINDINGS = [
+        Binding("escape", "close", "Закрыть"),
+        Binding("alt+space", "close", show=False, priority=True),
+        Binding("alt+g", "close", show=False, priority=True),
+        Binding("alt+o", "close", show=False, priority=True),
+    ]
+    DEFAULT_CSS = """
+    GitScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
+    GitScreen > Vertical { width: 96%; height: 94%; border: heavy #ff1a3c; background: #08080a; }
+    GitScreen #git-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    GitScreen #git-left { width: 42%; }
+    GitScreen .caption { color: #ff1a3c; text-style: bold; padding: 0 1; }
+    GitScreen OptionList { border: solid #3d0710; background: #08080a; }
+    GitScreen OptionList:focus { border: heavy #ff1a3c; }
+    GitScreen #branches { height: 30%; }
+    GitScreen #commits { height: 1fr; }
+    GitScreen #git-view { border: solid #3d0710; padding: 0 1; }
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.branches: list[str] = []
+        self.commits: list[tuple[str, str, str, str]] = []
+        self.shown = ""                 # текст показанного коммита
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("▓ GIT ┃ tab — между списками ┃ enter на ветке — переключить ┃ esc — закрыть", id="git-title")
+            with Horizontal():
+                with Vertical(id="git-left"):
+                    yield Label("ВЕТКИ", classes="caption")
+                    yield OptionList(id="branches")
+                    yield Label("КОММИТЫ", classes="caption")
+                    yield OptionList(id="commits")
+                with VerticalScroll(id="git-view"):
+                    yield Static("выбери коммит", id="commit-view")
+
+    def on_mount(self):
+        self.reload()
+        self.query_one("#commits").focus()
+
+    @work(exclusive=True, group="git-screen")
+    async def reload(self):
+        git = self.app.orch.git
+        snap = await git.snapshot()
+        self.branches = snap.branches
+        self.commits = await git.commits()
+        bl = self.query_one("#branches", OptionList)
+        bl.clear_options()
+        bl.add_options([("► " if b == snap.branch else "  ") + b for b in self.branches])
+        cl = self.query_one("#commits", OptionList)
+        cl.clear_options()
+        cl.add_options([f"{h[:7]}  {subj[:70]}  · {when}" for h, when, _, subj in self.commits])
+        if self.commits:
+            cl.highlighted = 0
+            self.show_commit(self.commits[0][0])
+
+    @work(exclusive=True, group="git-show")
+    async def show_commit(self, sha: str):
+        text = await self.app.orch.git.show(sha)
+        self.shown = text
+        self.query_one("#commit-view", Static).update(Syntax(text, "diff", theme=CODE_THEME, word_wrap=True))
+
+    @on(OptionList.OptionHighlighted, "#commits")
+    def preview(self, ev: OptionList.OptionHighlighted):
+        if 0 <= ev.option_index < len(self.commits):
+            self.show_commit(self.commits[ev.option_index][0])
+
+    @on(OptionList.OptionSelected, "#branches")
+    def switch(self, ev: OptionList.OptionSelected):
+        self.app.switch_branch(self.branches[ev.option_index])
+        self.set_timer(1.0, self.reload)
+
+    def action_close(self):
+        self.dismiss(None)
+
+
 class PromptInput(Input):
     BINDINGS = [Binding("up", "hist(-1)", show=False), Binding("down", "hist(1)", show=False)]
 
@@ -328,6 +489,9 @@ class CapricornApp(App):
     .panel.active { border: solid #ff1a3c; border-subtitle-color: #ff1a3c; }
     .panel.failed { border: double #ff1a3c; }
     .panel:focus, .panel:focus-within { border: heavy #ff1a3c; background: #0c0607; }
+    .panel.selected { border: heavy #ff1a3c; border-title-background: #2a0309; }
+    /* в окнах: CSS приложения сильнее DEFAULT_CSS экранов, поэтому правила для .panel — здесь */
+    FocusScreen .panel { height: 1fr; border: none; }
     #p-git { overflow-y: auto; }
     Item { margin-bottom: 1; }
     Item.incoming { margin-bottom: 0; }
@@ -341,12 +505,28 @@ class CapricornApp(App):
     """
     COMMAND_PALETTE_BINDING = "ctrl+backslash"
     BINDINGS = [
+        # всё основное — через alt; priority: срабатывает, даже когда курсор в строке ввода
+        Binding("alt+space", "open_selected", "Окно панели", priority=True),
+        Binding("alt+o", "open_selected", show=False, priority=True),
+        *[Binding(f"alt+{i}", f"select_index({i})", show=False, priority=True) for i in range(1, 10)],
+        Binding("alt+left", "move(-1, 0)", show=False, priority=True),
+        Binding("alt+right", "move(1, 0)", show=False, priority=True),
+        Binding("alt+up", "move(0, -1)", show=False, priority=True),
+        Binding("alt+down", "move(0, 1)", show=False, priority=True),
+        Binding("alt+g", "open_git", "Git", priority=True),
+        Binding("alt+z", "zoom_selected", show=False, priority=True),
+        Binding("alt+p", "toggle_pause", show=False, priority=True),
+        Binding("alt+s", "stop", show=False, priority=True),
+        Binding("alt+b", "branches", show=False, priority=True),
+        Binding("alt+w", "slash('/worktrees')", show=False, priority=True),
+        Binding("alt+n", "slash('/new')", show=False, priority=True),
+        Binding("alt+e", "slash('/export')", show=False, priority=True),
+        Binding("alt+h", "slash('/help')", show=False, priority=True),
         Binding("f5", "toggle_pause", "Пауза"),
         Binding("f8", "stop", "Стоп"),
         Binding("ctrl+b", "branches", "Ветки"),
         Binding("escape", "unzoom", "Свернуть", show=False),
         Binding("ctrl+q", "quit", "Выход"),
-        *[Binding(f"alt+{i}", f"zoom_index({i})", show=False) for i in range(1, 10)],
     ]
 
     def __init__(self, cfg: Config, repo: str, resume: bool = False):
@@ -355,6 +535,9 @@ class CapricornApp(App):
         self.repo = repo
         self.resume = resume            # продолжить последнюю сессию проекта
         self.orch: Orchestrator | None = None
+        self.selected = "manager"       # панель, которую откроет alt+space
+        self.focus_agent: str | None = None
+        self.focus_screen: FocusScreen | None = None
         self.snapshot = GitSnapshot()
         self.panels: dict[str, AgentPanel] = {}
 
@@ -408,6 +591,7 @@ class CapricornApp(App):
             a = self.orch.agents[name]
             p.set_meta(model=self.cfg.agents[name].model, status=a.status, tok=(a.tokens_in, a.tokens_out))
         self.apply_layout()
+        self.select(self.selected)
 
     def replay(self):
         """Перерисовать ленту и панели из сохранённой переписки."""
@@ -429,6 +613,8 @@ class CapricornApp(App):
         on = self.cfg.complex_mode
         self.panels["coder3"].display = on
         self.feed.styles.column_span = 1 if on else 2
+        if not on and self.selected == "coder3":
+            self.select("manager")
 
     @work(exclusive=True, group="git")
     async def refresh_git(self):
@@ -460,7 +646,7 @@ class CapricornApp(App):
         status.update(
             f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}РЕЖИМ [{BONE}]{mode}[/]{sep}"
             f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]{att}{sep}"
-            f"[{STEEL}]F5 пауза · F8 стоп · ctrl+b ветки · /help[/]")
+            f"[{STEEL}]alt+space окно · alt+1..9 выбор · alt+g git · alt+p пауза · alt+h справка[/]")
 
     # ------------------------------------------------------ orchestrator
     def show_message(self, msg: Message, live: bool = True):
@@ -470,20 +656,33 @@ class CapricornApp(App):
                 self.panels[n].incoming(msg)
         if not live and msg.sender in self.panels and msg.content.strip():
             self.panels[msg.sender].own(msg.content, msg.to)     # вживую своё сообщение пришло стримом
-        if live and USER in msg.to:
+        if live and USER in msg.to and msg.kind != "private":     # личные ответы видны в окне агента
             self.bell()
 
     def handle_orch_event(self, kind: str, **d):
+        focus = self.focus_screen if d.get("agent") == self.focus_agent and self.focus_agent else None
         if kind == "message":
-            self.show_message(d["msg"])
+            msg: Message = d["msg"]
+            self.show_message(msg)
+            if (self.focus_screen and msg.kind == "private" and msg.sender == USER
+                    and msg.to == [self.focus_agent]):
+                self.focus_screen.panel.user_line(msg.content)
         elif kind == "stream_start":
             self.panels[d["agent"]].stream_start(d["msg_id"])
+            if focus:
+                focus.panel.stream_start(d["msg_id"])
         elif kind == "stream_chunk":
             self.panels[d["agent"]].stream_chunk(d["msg_id"], d["chunk"])
+            if focus and d["msg_id"] in focus.panel.streams:
+                focus.panel.stream_chunk(d["msg_id"], d["chunk"])
         elif kind == "stream_end":
             self.panels[d["agent"]].stream_end(d["msg_id"], d["text"], d["to"])
+            if focus and d["msg_id"] in focus.panel.streams:
+                focus.panel.stream_end(d["msg_id"], d["text"], d["to"])
         elif kind == "status":
             self.panels[d["agent"]].set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"]))
+            if focus:
+                focus.panel.set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"]))
         elif kind == "system":
             self.feed.system(d["text"], d.get("level", "info"))
 
@@ -667,9 +866,83 @@ class CapricornApp(App):
         w = self.query_one(f"#p-{key}")
         self.screen.maximize(w)
 
-    def action_zoom_index(self, i: int):
-        self.zoom(PANEL_ORDER[i - 1])
-
     def action_unzoom(self):
         self.screen.minimize()
         self.query_one("#prompt").focus()
+
+    # ------------------------------------------------- выбор панели и окна
+    def visible_panels(self) -> list[str]:
+        return [k for k in PANEL_ORDER if k != "coder3" or self.cfg.complex_mode]
+
+    def select(self, key: str):
+        if key not in self.visible_panels():
+            return
+        self.selected = key
+        for k in PANEL_ORDER:
+            self.query_one(f"#p-{k}").set_class(k == key, "selected")
+
+    def action_select_index(self, i: int):
+        self.select(PANEL_ORDER[i - 1])
+
+    def grid_cells(self) -> dict[tuple[int, int], str]:
+        """Клетки сетки 3×3, как они видны на экране: скрытый coder3 сдвигает панели, лента — на две клетки."""
+        cells, pos = {}, 0
+        for key in self.visible_panels():
+            span = 2 if key == "feed" and not self.cfg.complex_mode else 1
+            for s in range(span):
+                cells[divmod(pos + s, 3)] = key
+            pos += span
+        return cells
+
+    def action_move(self, dx: int, dy: int):
+        cells = self.grid_cells()
+        mine = [rc for rc, k in cells.items() if k == self.selected]
+        if not mine:
+            return
+        row, col = mine[0] if dx <= 0 else mine[-1]
+        r, c = row + dy, col + dx
+        while (r, c) in cells:
+            if cells[(r, c)] != self.selected:
+                self.select(cells[(r, c)])
+                return
+            r, c = r + dy, c + dx
+
+    def action_zoom_selected(self):
+        self.zoom(self.selected)
+
+    def action_open_selected(self):
+        if isinstance(self.screen, (FocusScreen, GitScreen)):              # alt+space в окне — закрыть его
+            self.screen.action_close()
+            return
+        if self.selected == "git":
+            self.action_open_git()
+        elif self.selected == "feed":
+            self.zoom("feed")
+        else:
+            self.open_focus(self.selected)
+
+    def action_open_git(self):
+        if isinstance(self.screen, GitScreen):
+            self.screen.action_close()
+            return
+        if isinstance(self.screen, FocusScreen):
+            return
+        self.push_screen(GitScreen(), lambda _: self.refresh_git())
+
+    def open_focus(self, agent: str):
+        self.focus_agent = agent
+        self.orch.open_private(agent)
+        self.focus_screen = FocusScreen(agent)
+        self.push_screen(self.focus_screen, self._focus_closed)
+
+    def _focus_closed(self, _result=None):
+        agent, self.focus_agent, self.focus_screen = self.focus_agent, None, None
+        if agent and self.orch.end_private(agent):
+            self.feed.system(f"► {ROLE_TITLES[agent]} подводит итог разговора — он уйдёт команде")
+        self.query_one("#prompt").focus()
+
+    def action_slash(self, line: str):
+        try:
+            self.command(line)
+        except Exception as e:  # noqa: BLE001
+            self.feed.system(f"▲ {e}", "error")

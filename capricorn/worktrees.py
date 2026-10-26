@@ -45,7 +45,7 @@ class Worktrees:
         if not (self.cfg.tools.enabled and self.cfg.tools.write and self.cfg.tools.worktrees):
             return False
         if self._active is None:
-            r = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=self.repo,
+            r = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=self.repo, stdin=subprocess.DEVNULL,
                                capture_output=True, text=True)
             self._active = r.returncode == 0
         return self._active

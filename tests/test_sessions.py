@@ -120,3 +120,13 @@ def test_new_ids_unique_within_one_second(tmp_path):
     store = SessionStore(tmp_path)
     ids = {store.new_id() for _ in range(50)}
     assert len(ids) == 50
+
+
+def test_empty_session_is_not_saved(tmp_path):
+    """Регрессия: каждое открытие окна/вкладки сохраняло пустую сессию — /sessions зарастал мусором."""
+    orch, _ = build_orch(tmp_path)
+    orch.save()
+    assert orch.store.list() == []
+    orch.route(USER, "привет")
+    orch.save()
+    assert [s.id for s in orch.store.list()] == [orch.session_id]

@@ -377,7 +377,7 @@ async def _run_tests(tb: Toolbox, a: dict) -> ToolResult:
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(tb.root), env=env,
+            *argv, cwd=str(tb.root), env=env, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except OSError as e:
         raise ToolError(f"не удалось запустить {argv[0]}: {e}") from None
