@@ -16,9 +16,11 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 HOST = "127.0.0.1"
 TITLE = "Capricorn"
+ASSETS = Path(__file__).resolve().parent / "web_assets"     # шаблон заставки для --web / --desktop
 
 
 class ModeUnavailable(RuntimeError):
@@ -114,7 +116,8 @@ def serve_web(command: str, port: int, open_browser: bool = True, host: str = HO
             if wait_for_port(port, host):
                 webbrowser.open(url)
         threading.Thread(target=opener, daemon=True).start()
-    Server(command, host=host, port=port, title=TITLE).serve()
+    # своя заставка (app_index.html) вместо стандартной textual-serve; static (textual.js, шрифты) — её
+    Server(command, host=host, port=port, title=TITLE, templates_path=str(ASSETS)).serve()
 
 
 # -------------------------------------------------------------- desktop

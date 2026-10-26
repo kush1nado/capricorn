@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ application.name or 'Capricorn' }}</title>
+    <link rel="stylesheet" href="{{ config.static.url }}css/xterm.css" />
+    <script src="{{ config.static.url }}js/textual.js"></script>
+    <style>
+      /* Шрифт терминала — из файлов textual-serve: без запросов в интернет */
+      @font-face {
+        font-family: "Roboto Mono";
+        src: url("{{ config.static.url }}fonts/RobotoMono-VariableFont_wght.ttf") format("truetype");
+        font-weight: 100 700;
+      }
+      @font-face {
+        font-family: "Roboto Mono";
+        src: url("{{ config.static.url }}fonts/RobotoMono-Italic-VariableFont_wght.ttf") format("truetype");
+        font-style: italic;
+        font-weight: 100 700;
+      }
+      :root {
+        --black: #050506;
+        --red: #ff1a3c;
+        --red-dim: #5c0a16;
+        --red-deep: #2a0309;
+        --bone: #e9e4dc;
+        --steel: #6e7681;
+        --cyan: #00e5ff;
+        --pink: #ff2e88;
+      }
+      html, body { margin: 0; height: 100%; background: var(--black); overflow: hidden; }
+      body { font-family: "Roboto Mono", Consolas, Menlo, monospace; color: var(--bone); }
+
+      .dialog-container {
+        position: absolute; inset: 0; z-index: 10;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .shade {
+        position: absolute; inset: 0; background:
+          radial-gradient(ellipse at center, rgba(255, 26, 60, 0.10) 0%, transparent 60%),
+          var(--black);
+      }
+      /* развёртка ЭЛТ */
+      .shade::after {
+        content: ""; position: absolute; inset: 0; pointer-events: none;
+        background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.35) 0 1px, transparent 1px 3px);
+      }
+      .panel {
+        position: relative; z-index: 20; width: min(760px, 92vw); padding: 28px 32px 24px;
+        border: 1px solid var(--red-dim); background: rgba(8, 8, 10, 0.92);
+        box-shadow: 0 0 0 1px #000, 0 0 40px rgba(255, 26, 60, 0.18);
+      }
+      .panel::before {
+        content: "◢ CAPRICORN // BOOT"; position: absolute; top: -10px; left: 18px; padding: 0 8px;
+        background: var(--black); color: var(--red); font-size: 12px; letter-spacing: 2px; font-weight: 700;
+      }
+
+      .logo {
+        margin: 0 0 18px; font-size: clamp(7px, 1.25vw, 12px); line-height: 1.05; color: var(--red);
+        white-space: pre; text-shadow: 0 0 6px rgba(255, 26, 60, 0.7);
+        animation: glitch 3.2s infinite steps(1);
+      }
+      @keyframes glitch {
+        0%, 86%, 100% { transform: none; text-shadow: 0 0 6px rgba(255, 26, 60, 0.7); }
+        88% { transform: translateX(-3px); text-shadow: 3px 0 var(--cyan), -3px 0 var(--pink); }
+        90% { transform: translateX(2px) skewX(-6deg); text-shadow: -2px 0 var(--cyan), 2px 0 var(--pink); }
+        92% { transform: translateX(-1px); clip-path: inset(30% 0 40% 0); }
+        94% { transform: none; clip-path: none; }
+      }
+
+      .boot { margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 1.7; }
+      .boot li { opacity: 0; color: var(--steel); white-space: nowrap; overflow: hidden; animation: line 0.25s forwards; }
+      .boot li b { color: var(--bone); font-weight: 500; }
+      .boot li .ok { color: var(--cyan); }
+      .boot li:nth-child(1) { animation-delay: 0.15s; }
+      .boot li:nth-child(2) { animation-delay: 0.55s; }
+      .boot li:nth-child(3) { animation-delay: 0.95s; }
+      .boot li:nth-child(4) { animation-delay: 1.35s; }
+      .boot li:nth-child(5) { animation-delay: 1.75s; color: var(--red); }
+      @keyframes line { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+      .cursor { display: inline-block; width: 0.6em; background: var(--red); animation: blink 0.9s infinite steps(1); }
+      @keyframes blink { 50% { opacity: 0; } }
+
+      .bar { margin-top: 18px; height: 6px; background: var(--red-deep); overflow: hidden; position: relative; }
+      .bar::after {
+        content: ""; position: absolute; top: 0; bottom: 0; width: 35%;
+        background: repeating-linear-gradient(90deg, var(--red) 0 10px, transparent 10px 14px);
+        animation: scan 1.4s infinite linear;
+      }
+      @keyframes scan { from { left: -35%; } to { left: 100%; } }
+      .meta { margin-top: 10px; display: flex; justify-content: space-between; font-size: 11px; color: var(--steel); letter-spacing: 1px; }
+
+      button {
+        margin-top: 18px; padding: 12px 28px; border: 1px solid var(--red); background: var(--red-deep);
+        color: var(--bone); font-family: inherit; font-size: 13px; letter-spacing: 2px; cursor: pointer;
+      }
+      button:hover { background: var(--red); color: var(--black); }
+
+      /* служебные состояния — их переключает textual.js */
+      body.-first-byte .intro-dialog { opacity: 0; transition: opacity 0.35s ease-out; pointer-events: none; }
+      body.-first-byte .intro-dialog.gone { display: none; }
+      body .textual-terminal { opacity: 0; transition: opacity 0.35s ease-out; }
+      body.-first-byte .textual-terminal { opacity: 1; }
+      .closed-dialog { display: none; }
+      body.-closed .closed-dialog { display: flex; }
+      #start { display: none; }
+      #start.-delay { display: inline-block; }
+      .closed-title { color: var(--red); font-size: 18px; letter-spacing: 3px; font-weight: 700; }
+      .closed-note { margin-top: 8px; color: var(--steel); font-size: 13px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .logo, .boot li, .bar::after, .cursor { animation: none; opacity: 1; }
+      }
+    </style>
+    <script>
+      function getStartUrl() {
+        const url = new URL(window.location.href);
+        const params = new URLSearchParams(url.search);
+        params.delete("delay");
+        return url.pathname + "?" + params.toString();
+      }
+      async function refresh() {
+        const ping_url = document.body.dataset.pingurl;
+        if (ping_url) {
+          await fetch(ping_url, { method: "GET", mode: "no-cors" });
+        }
+        window.location.href = getStartUrl();
+      }
+      // после затухания убираем заставку совсем, чтобы не перехватывала клики
+      document.addEventListener("transitionend", (e) => {
+        if (e.target.classList && e.target.classList.contains("intro-dialog")) e.target.classList.add("gone");
+      });
+    </script>
+  </head>
+  <body data-pingurl="{{ ping_url }}" data-capricorn-loader="1">
+    <div class="dialog-container intro-dialog">
+      <div class="shade"></div>
+      <div class="panel">
+<pre class="logo" aria-label="CAPRICORN"> ████   ███   ████   ████   ████   ████   ███   ████   ██  ██
+██     ██ ██  ██ ██  ██ ██   ██   ██     ██ ██  ██ ██  ███ ██
+██     █████  ████   ████    ██   ██     ██ ██  ████   ██████
+██     ██ ██  ██     ██ ██   ██   ██     ██ ██  ██ ██  ██ ███
+ ████  ██ ██  ██     ██ ██  ████   ████   ███   ██ ██  ██  ██</pre>
+        <ul class="boot">
+          <li>▓ ИНИЦИАЛИЗАЦИЯ ЯДРА .......................... <span class="ok">OK</span></li>
+          <li>▓ ПОДКЛЮЧЕНИЕ К РЕПОЗИТОРИЮ ................... <span class="ok">OK</span></li>
+          <li>▓ АГЕНТЫ: <b>architect · manager · coder1 · coder2 · reviewer · tester</b></li>
+          <li>▓ ШИНА СООБЩЕНИЙ ............................. <span class="ok">ONLINE</span></li>
+          <li>▸ ЖДУ ПЕРВЫЙ КАДР ИНТЕРФЕЙСА <span class="cursor">&nbsp;</span></li>
+        </ul>
+        <div class="bar"></div>
+        <div class="meta"><span>MULTI-AGENT DEVELOPMENT ENVIRONMENT</span><span>{{ application.name or 'Capricorn' }}</span></div>
+        <button type="button" onclick="refresh()" id="start">ЗАПУСК</button>
+      </div>
+    </div>
+
+    <div class="dialog-container closed-dialog">
+      <div class="shade"></div>
+      <div class="panel">
+        <div class="closed-title">■ СЕССИЯ ЗАВЕРШЕНА</div>
+        <div class="closed-note">Команда остановлена. Переписка сохранена в логе сессии.</div>
+        <button type="button" onclick="refresh()">ПЕРЕЗАПУСК</button>
+      </div>
+    </div>
+
+    <div
+      id="terminal"
+      class="textual-terminal"
+      data-session-websocket-url="{{ app_websocket_url }}"
+      data-font-size="{{ font_size }}"
+    ></div>
+  </body>
+</html>

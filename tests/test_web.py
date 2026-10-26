@@ -181,7 +181,11 @@ async def test_web_server_serves_live_app(tmp_path, isolated_home, monkeypatch):
         async with aiohttp.ClientSession() as http:
             async with http.get(f"http://127.0.0.1:{port}/") as r:
                 assert r.status == 200
-                assert "Capricorn" in await r.text()
+                page = await r.text()
+                assert 'data-capricorn-loader="1"' in page          # наша заставка, не стандартная
+                assert "fonts/RobotoMono-VariableFont_wght.ttf" in page
+            async with http.get(f"http://127.0.0.1:{port}/static/fonts/RobotoMono-VariableFont_wght.ttf") as r:
+                assert r.status == 200                               # шрифт отдаётся локально
             received = ""
             async with http.ws_connect(f"http://127.0.0.1:{port}/ws?width=160&height=48") as ws:
                 loop = asyncio.get_running_loop()
@@ -255,3 +259,42 @@ def test_smoke_finds_cli_in_dist_and_app_bundle(tmp_path):
     assert smoke.find_cli(dist) == mac / web.CLI_EXE
     (dist / web.CLI_EXE).write_bytes(b"")
     assert smoke.find_cli(dist) == dist / web.CLI_EXE
+
+
+# --------------------------------------------------------------- заставка
+
+def test_loader_template_keeps_textual_hooks_and_is_offline():
+    html = (web.ASSETS / "app_index.html").read_text(encoding="utf-8")
+    for hook in ('js/textual.js', 'class="textual-terminal"', 'data-session-websocket-url="{{ app_websocket_url }}"',
+                 'data-font-size="{{ font_size }}"', 'id="start"', 'intro-dialog', 'closed-dialog',
+                 '-first-byte', '-closed', 'function refresh()'):
+        assert hook in html, hook
+    import re
+    external = re.findall(r'(?:href|src|url\()\s*=?\s*["\']?(https?://[^"\')\s]+)', html)
+    assert external == [], f"заставка не должна ходить в интернет: {external}"
+    assert "CAPRICORN" in html and "ИНИЦИАЛИЗАЦИЯ" in html
+
+
+def test_serve_web_uses_our_template(monkeypatch):
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, command, **kw):
+            seen.update(command=command, **kw)
+
+        def serve(self):
+            seen["served"] = True
+
+    import textual_serve.server
+    monkeypatch.setattr(textual_serve.server, "Server", FakeServer)
+    web.serve_web("cmd", 1234, open_browser=False)
+    assert seen["templates_path"] == str(web.ASSETS) and seen["served"]
+    assert (web.ASSETS / "app_index.html").exists()
+
+
+def test_loader_is_packaged():
+    """Шаблон должен попадать и в wheel (package-data), и в сборку PyInstaller."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    assert "web_assets/*.html" in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "web_assets" in (root / "packaging" / "capricorn.spec").read_text(encoding="utf-8")

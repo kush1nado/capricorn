@@ -11,7 +11,8 @@ ROOT = Path(SPECPATH).parent  # noqa: F821 — SPECPATH задаёт PyInstaller
 # rich — таблицы юникода; PyInstaller сам их не найдёт.
 hidden = (collect_submodules("textual") + collect_submodules("rich") + collect_submodules("textual_serve")
           + collect_submodules("capricorn"))
-datas = collect_data_files("textual") + collect_data_files("textual_serve") + collect_data_files("webview")
+datas = (collect_data_files("textual") + collect_data_files("textual_serve") + collect_data_files("webview")
+         + [(str(ROOT / "capricorn" / "web_assets"), "capricorn/web_assets")])   # заставка --web/--desktop
 
 
 def analysis(script):

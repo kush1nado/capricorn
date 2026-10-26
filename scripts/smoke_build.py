@@ -45,6 +45,11 @@ async def check(cli: Path) -> bool:
             return False
         received = ""
         async with aiohttp.ClientSession() as http:
+            async with http.get(f"http://127.0.0.1:{port}/") as r:
+                loader = r.status == 200 and 'data-capricorn-loader="1"' in await r.text()
+            print("loader:", "ok" if loader else "FAIL (стандартная заставка textual-serve — шаблон не попал в сборку)")
+            if not loader:
+                return False
             async with http.ws_connect(f"http://127.0.0.1:{port}/ws?width=160&height=48") as ws:
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + 60

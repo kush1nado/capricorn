@@ -36,7 +36,7 @@ version = { attr = "capricorn.__version__" }
 include = ["capricorn*"]
 
 [tool.setuptools.package-data]
-capricorn = ["*.tcss"]
+capricorn = ["*.tcss", "web_assets/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
