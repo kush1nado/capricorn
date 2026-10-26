@@ -51,10 +51,12 @@ def main(argv: list[str]) -> int:
         print(fmt(parse(INIT.read_text(encoding="utf-8"))))
         return 0
     if cmd == "bump":
-        text = INIT.read_text(encoding="utf-8")
+        with open(INIT, encoding="utf-8", newline="") as f:      # newline="" — переводы строк как есть
+            text = f.read()
         old = parse(text)
         new = bumped(old, argv[1] if len(argv) > 1 else "patch")
-        INIT.write_text(VERSION_RE.sub(f'__version__ = "{fmt(new)}"', text, count=1), encoding="utf-8")
+        with open(INIT, "w", encoding="utf-8", newline="") as f:
+            f.write(VERSION_RE.sub(f'__version__ = "{fmt(new)}"', text, count=1))
         print(f"{fmt(old)} -> {fmt(new)}")
         return 0
     if cmd == "check":

@@ -78,3 +78,13 @@ def test_check_requires_increase_against_head(tmp_path, monkeypatch):
     init.write_text('__version__ = "0.0.9"\n', encoding="utf-8")
     git(tmp_path, "add", "capricorn/__init__.py")
     assert version.main(["check"]) == 1                  # понижение тоже нельзя
+
+
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"])
+def test_bump_keeps_line_endings(tmp_path, monkeypatch, eol):
+    """Регрессия: на Windows write_text превращал LF в CRLF."""
+    init = tmp_path / "__init__.py"
+    init.write_bytes(b'"""doc"""' + eol + b'__version__ = "0.1.0"' + eol)
+    monkeypatch.setattr(version, "INIT", init)
+    version.main(["bump"])
+    assert init.read_bytes() == b'"""doc"""' + eol + b'__version__ = "0.1.1"' + eol
