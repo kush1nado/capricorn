@@ -54,14 +54,31 @@ def cli_available() -> dict[str, bool]:
             "codex": CodexProvider("codex", {}).discover() is not None}
 
 
+def codex_models() -> list[tuple[str, str]]:
+    """(название, slug) моделей Codex из его кэша (~/.codex/models_cache.json) — без хардкода:
+    новые модели OpenAI появляются сами. Скрытые (visibility != list) не показываем."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    try:
+        data = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for m in data.get("models") or [] if isinstance(data, dict) else []:
+        if isinstance(m, dict) and m.get("slug") and m.get("visibility", "list") == "list":
+            out.append((str(m.get("display_name") or m["slug"]), str(m["slug"])))
+    return out
+
+
 def available_models(cfg: Config, cli: dict[str, bool] | None = None) -> list[tuple[str, str]]:
     """(подпись, модель) — только то, что реально запустится на этой машине."""
     cli = cli_available() if cli is None else cli
     out: list[tuple[str, str]] = []
     if cli.get("claude-code"):
-        out += [("Claude Sonnet (подписка)", "claude-code/sonnet"), ("Claude Opus (подписка)", "claude-code/opus")]
+        out += [("Claude Sonnet (подписка)", "claude-code/sonnet"), ("Claude Opus (подписка)", "claude-code/opus"),
+                ("Claude Haiku — лёгкая (подписка)", "claude-code/haiku")]
     if cli.get("codex"):
-        out.append(("Codex (подписка ChatGPT)", "codex/default"))
+        out.append(("Codex по умолчанию (подписка ChatGPT)", "codex/default"))
+        out += [(f"Codex {name} (подписка)", f"codex/{slug}") for name, slug in codex_models()]
     for model in dict.fromkeys(a.model for a in cfg.agents.values()):     # из конфига проекта, по порядку
         provider = model.split("/", 1)[0]
         if provider in cfg.providers and provider != "mock" and model not in {m for _, m in out}:
@@ -72,6 +89,7 @@ def available_models(cfg: Config, cli: dict[str, bool] | None = None) -> list[tu
 
 def presets(cfg: Config, available: list[tuple[str, str]]) -> dict[str, dict[str, str]]:
     have = {m for _, m in available}
+    have_order = [m for _, m in available]
     out: dict[str, dict[str, str]] = {}
     if "claude-code/sonnet" in have:
         out["Claude"] = {r: "claude-code/sonnet" for r in ROLES}
@@ -79,6 +97,12 @@ def presets(cfg: Config, available: list[tuple[str, str]]) -> dict[str, dict[str
         out["Codex"] = {r: "codex/default" for r in ROLES}
     if {"claude-code/sonnet", "codex/default"} <= have:
         out["Смешанно"] = {r: "codex/default" if r in WRITERS else "claude-code/sonnet" for r in ROLES}
+    # «Экономно»: лёгкие модели — кодерам Codex Luna, остальным Claude Haiku (что есть)
+    light_claude = "claude-code/haiku" if "claude-code/haiku" in have else None
+    light_codex = next((m for m in have_order if m.startswith("codex/") and "luna" in m), None)
+    if light_claude or light_codex:
+        out["Экономно"] = {r: (light_codex or light_claude) if r in WRITERS else (light_claude or light_codex)
+                          for r in ROLES}
     out["Из конфига"] = {r: a.model for r, a in cfg.agents.items()}
     out["Заглушка"] = {r: "mock/mock" for r in ROLES}
     return out

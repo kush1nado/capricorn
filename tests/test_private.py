@@ -78,3 +78,24 @@ async def test_summary_from_manager_wakes_nobody(make_orch):
     await settle(orch)
     assert sum(a.turns for n, a in orch.agents.items() if n != "manager") == 0
     assert all(any(m.kind == "summary" for m in orch.agents[n].context) for n in ("architect", "coder1"))
+
+
+async def test_manager_summary_delegates_to_mentioned_agents(make_orch):
+    """Регрессия: «дай задачу 2+2» в личном канале менеджера — итог ушёл всем как контекст,
+    а coder1 так и не получил задачу."""
+    orch, events = make_orch({"manager": ["Ок, поручу кодеру.", "Итог: @coder1 посчитай 2+2 и сообщи результат."],
+                              "coder1": "4"})
+    orch.open_private("manager")
+    orch.private_says("manager", "дай задачу 2+2 пусть сложат")
+    await settle(orch)
+    orch.end_private("manager")
+    await settle(orch)
+    assert orch.agents["coder1"].turns == 1                     # упомянутый получил итог задачей
+    got = orch.providers["script"].calls_for("coder1")[0].messages[-1]["content"]
+    assert "посчитай 2+2" in got
+    assert orch.agents["coder2"].turns == 0                     # остальные — только контекст
+    assert any(m.kind == "summary" for m in orch.agents["coder2"].context)
+
+
+def test_handoff_prompt_allows_mentions():
+    assert "@" in HANDOFF_PROMPT and "без @упоминаний" not in HANDOFF_PROMPT

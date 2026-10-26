@@ -68,7 +68,7 @@ async def test_codex_first_turn_then_resume(fake, tmp_path):
     p = CodexProvider("codex", {"command": fake([{"events": CODEX_TURN}, {"events": CODEX_TURN[1:]}])})
     out = await collect(p, workspace=ws(tmp_path), model="gpt-x")
     assert out == ["Смотрю.", {"note": "shell: rg foo → 0"}, {"note": "правка: a.py"},
-                   "\n\nГотово. @reviewer", {"usage": {"in": 120, "out": 7}}]
+                   "\n\nГотово. @reviewer", {"usage": {"in": 20, "out": 7, "cached": 100}}]
     assert p.sessions == {"coder1": "th-1"}
 
     out2 = await collect(p, workspace=ws(tmp_path, write=True),
@@ -169,7 +169,7 @@ async def test_claude_read_only_then_resume(fake, tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDECODE", "1")                   # Capricorn запущен внутри Claude Code
     p = ClaudeCodeProvider("claude-code", {"command": fake([{"events": CLAUDE_TURN}])})
     out = await collect(p, agent="reviewer", workspace=ws(tmp_path))
-    assert out == ["Читаю.", {"note": "Read: src/app.py"}, "\n\nВсё ок. @manager", {"usage": {"in": 80, "out": 9}}]
+    assert out == ["Читаю.", {"note": "Read: src/app.py"}, "\n\nВсё ок. @manager", {"usage": {"in": 50, "out": 9, "cached": 30}}]
     assert p.sessions["reviewer"] == "s-1"
     await collect(p, agent="reviewer", workspace=ws(tmp_path))
     first, second = fake.log()

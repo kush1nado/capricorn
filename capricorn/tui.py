@@ -44,6 +44,7 @@ CODE_THEME = "fruity"
 SPIN = "░▒▓█▓▒"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
+PANEL_NAMES = {**ROLE_TITLES, "git": "Git", "feed": "Лента"}
 ACTIVE = ("thinking", "typing", "working")     # working — агент выполняет инструмент
 
 HELP = """\
@@ -79,6 +80,14 @@ def k(n: int) -> str:
 
 
 # ------------------------------------------------------------------ widgets
+
+def select_panel(panel):
+    """Клик (фокус) по панели главного экрана делает её выбранной — alt+space откроет её окно.
+    Мышь работает везде, а alt+цифра в окне приложения может не дойти."""
+    app = panel.app
+    if getattr(app, "orch", None) is not None and panel.id == f"p-{panel.key}":
+        app.select(panel.key)
+
 
 class Item(Static):
     """Одно сообщение в панели."""
@@ -118,6 +127,9 @@ class LogPanel(VerticalScroll):
         for item in list(self.query(Item)):
             item.remove()
 
+    def on_focus(self):
+        select_panel(self)
+
 
 class AgentPanel(LogPanel):
     def __init__(self, key: str, index: int, wid: str | None = None):
@@ -127,7 +139,7 @@ class AgentPanel(LogPanel):
         self.dirty: set[int] = set()
         self.status = "idle"
         self.model = ""
-        self.tok = (0, 0)
+        self.tok = (0, 0, 0)            # новые ↑, ответ ↓, кэш
         self._spin = 0
 
     def on_mount(self):
@@ -148,7 +160,7 @@ class AgentPanel(LogPanel):
         self.set_class(self.status in ACTIVE, "active")
         self.set_class(self.status == "error", "failed")
         self.border_subtitle = (f"{icon} {self.status.upper()} ┃ {self.model} ┃ "
-                                f"{k(self.tok[0])}↑ {k(self.tok[1])}↓")
+                                f"{k(self.tok[0])}↑ {k(self.tok[1])}↓" + (f" кэш {k(self.tok[2])}" if self.tok[2] else ""))
 
     def _tick(self):
         if self.status in ACTIVE:
@@ -242,6 +254,9 @@ class FeedPanel(LogPanel):
 
 class GitPanel(Static, can_focus=True):
     ALLOW_MAXIMIZE = True
+
+    def on_focus(self):
+        select_panel(self)
 
     def __init__(self, index: int):
         super().__init__(id="p-git", classes="panel")
@@ -500,7 +515,7 @@ class FocusScreen(ModalScreen[None]):
     def on_mount(self):
         a = self.app.orch.agents[self.agent]
         self.panel.set_meta(model=self.app.cfg.agents[self.agent].model, status=a.status,
-                            tok=(a.tokens_in, a.tokens_out))
+                            tok=(a.tokens_in, a.tokens_out, a.tokens_cached))
         for msg in self.app.orch.messages:          # прошлые личные разговоры с этим агентом
             if msg.kind != "private":
                 continue
@@ -772,7 +787,7 @@ class CapricornApp(App):
     def sync_meta(self):
         for name, p in self.panels.items():
             a = self.orch.agents[name]
-            p.set_meta(model=self.cfg.agents[name].model, status=a.status, tok=(a.tokens_in, a.tokens_out))
+            p.set_meta(model=self.cfg.agents[name].model, status=a.status, tok=(a.tokens_in, a.tokens_out, a.tokens_cached))
         self.apply_layout()
         self.select(self.selected)
 
@@ -817,6 +832,7 @@ class CapricornApp(App):
         busy = [a.name for a in o.agents.values() if a.status in ACTIVE]
         tin = sum(a.tokens_in for a in o.agents.values())
         tout = sum(a.tokens_out for a in o.agents.values())
+        tcache = sum(a.tokens_cached for a in o.agents.values())
         if not o.running.is_set():
             state = f"[bold #050506 on #f5d300] ‖ ПАУЗА [/]"
         elif busy:
@@ -828,8 +844,9 @@ class CapricornApp(App):
         sep = f" [{RED_DIM}]┃[/] "
         status.update(
             f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}РЕЖИМ [{BONE}]{mode}[/]{sep}"
-            f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]{att}{sep}"
-            f"[{STEEL}]alt+space окно · alt+1..9 выбор · alt+g git · alt+p пауза · alt+h справка[/]")
+            f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]" + (f" [{STEEL}]кэш {k(tcache)}[/]" if tcache else "")
+            + f"{att}{sep}"
+            f"[{STEEL}]alt+space → [{BONE}]{PANEL_NAMES.get(self.selected, self.selected)}[/] · клик/alt+1..9 — выбор · alt+g git · alt+h справка[/]")
 
     # ------------------------------------------------------ orchestrator
     def show_message(self, msg: Message, live: bool = True):
@@ -863,9 +880,9 @@ class CapricornApp(App):
             if focus and d["msg_id"] in focus.panel.streams:
                 focus.panel.stream_end(d["msg_id"], d["text"], d["to"])
         elif kind == "status":
-            self.panels[d["agent"]].set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"]))
+            self.panels[d["agent"]].set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"], d.get("tokens_cached", 0)))
             if focus:
-                focus.panel.set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"]))
+                focus.panel.set_meta(status=d["status"], tok=(d["tokens_in"], d["tokens_out"], d.get("tokens_cached", 0)))
         elif kind == "system":
             self.feed.system(d["text"], d.get("level", "info"))
 
@@ -1063,6 +1080,8 @@ class CapricornApp(App):
         self.selected = key
         for k in PANEL_ORDER:
             self.query_one(f"#p-{k}").set_class(k == key, "selected")
+        if self.orch is not None:
+            self.update_status()            # подсказка «alt+space → …» меняется сразу
 
     def action_select_index(self, i: int):
         self.select(PANEL_ORDER[i - 1])

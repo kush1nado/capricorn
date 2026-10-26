@@ -19,7 +19,7 @@ import signal
 from pathlib import Path
 from typing import AsyncIterator
 
-from .providers import Provider, ProviderError
+from .providers import Provider, ProviderError, anthropic_usage
 
 STDERR_TAIL = 600
 
@@ -212,7 +212,9 @@ class CodexProvider(AgentCLIProvider):
                         yield {"note": "ошибка: " + _short(item["message"], 140)}
                 elif t == "turn.completed":
                     u = ev.get("usage") or {}
-                    yield {"usage": {"in": u.get("input_tokens", 0), "out": u.get("output_tokens", 0)}}
+                    cached = int(u.get("cached_input_tokens") or 0)        # input_tokens включает кэш
+                    yield {"usage": {"in": max(0, int(u.get("input_tokens") or 0) - cached),
+                                     "out": int(u.get("output_tokens") or 0), "cached": cached}}
                 elif t in ("turn.failed", "error"):
                     msg = (ev.get("error") or {}).get("message") if isinstance(ev.get("error"), dict) else ev.get("message")
                     raise ProviderError(f"Codex: {msg or ev}")
@@ -276,6 +278,5 @@ class ClaudeCodeProvider(AgentCLIProvider):
                     if ev.get("is_error"):
                         raise ProviderError(f"Claude Code: {_short(ev.get('result') or ev.get('subtype'), 300)}")
                     u = ev.get("usage") or {}
-                    yield {"usage": {"in": u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
-                                     "out": u.get("output_tokens", 0)}}
+                    yield {"usage": {**anthropic_usage(u), "out": int(u.get("output_tokens") or 0)}}
 

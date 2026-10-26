@@ -6,7 +6,8 @@
 * mock      — офлайн-заглушка, разыгрывает диалог команды без сети
 
 Каждый stream() — асинхронный генератор: отдаёт str-чанки текста, затем (если модель
-вызвала инструменты) {"tool_calls": [{"id", "name", "args"}]} и в конце {"usage": {"in", "out"}}.
+вызвала инструменты) {"tool_calls": [{"id", "name", "args"}]} и в конце {"usage": {"in", "out", "cached"}}:
+in — новые входные токены, cached — прочитанные из кэша (повтор системного промпта и истории).
 
 История агента хранится в нейтральном формате и переводится под каждый API:
   {"role": "user", "content": str}
@@ -52,6 +53,19 @@ async def _sse_lines(resp: httpx.Response) -> AsyncIterator[str]:
     async for line in resp.aiter_lines():
         if line.startswith("data:"):
             yield line[5:].strip()
+
+
+def anthropic_usage(u: dict) -> dict:
+    """Anthropic: input_tokens — без кэша; создание кэша — тоже новые токены; чтение кэша — отдельно."""
+    return {"in": int(u.get("input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0),
+            "cached": int(u.get("cache_read_input_tokens") or 0)}
+
+
+def openai_usage(u: dict) -> dict:
+    """OpenAI: prompt_tokens включает кэш — вычитаем его."""
+    cached = int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+    return {"in": max(0, int(u.get("prompt_tokens") or 0) - cached),
+            "out": int(u.get("completion_tokens") or 0), "cached": cached}
 
 
 def _parse_args(raw: str) -> dict | str:
@@ -105,7 +119,7 @@ class AnthropicProvider(Provider):
             body["tool_choice"] = {"type": tool_choice}
         headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
                    "content-type": "application/json"}
-        usage = {"in": 0, "out": 0}
+        usage = {"in": 0, "out": 0, "cached": 0}
         blocks: dict[int, dict] = {}            # index → накапливаемый tool_use
         async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20)) as client:
             async with client.stream("POST", url, json=body, headers=headers) as resp:
@@ -127,7 +141,7 @@ class AnthropicProvider(Provider):
                         cb = ev["content_block"]
                         blocks[ev.get("index", len(blocks))] = {"id": cb["id"], "name": cb["name"], "json": ""}
                     elif t == "message_start":
-                        usage["in"] = ev["message"].get("usage", {}).get("input_tokens", 0)
+                        usage.update(anthropic_usage(ev["message"].get("usage") or {}))
                     elif t == "message_delta":
                         usage["out"] = ev.get("usage", {}).get("output_tokens", usage["out"])
                     elif t == "error":
@@ -186,7 +200,7 @@ class OpenAICompatProvider(Provider):
 
         for _attempt in range(6):
             body = {"model": model, "stream": True, "messages": wire, **params}
-            usage = {"in": 0, "out": 0}
+            usage = {"in": 0, "out": 0, "cached": 0}
             calls: dict[int, dict] = {}
             async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=20)) as client:
                 async with client.stream("POST", base + "/chat/completions",
@@ -214,8 +228,7 @@ class OpenAICompatProvider(Provider):
                         except json.JSONDecodeError:
                             continue
                         if ev.get("usage"):
-                            usage = {"in": ev["usage"].get("prompt_tokens", 0),
-                                     "out": ev["usage"].get("completion_tokens", 0)}
+                            usage = openai_usage(ev["usage"])
                         for ch in ev.get("choices") or []:
                             delta = ch.get("delta") or {}
                             if delta.get("content"):

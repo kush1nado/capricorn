@@ -356,7 +356,7 @@ async def test_start_screen_picks_project_models_and_starts(tmp_path, fast_mock,
         app.screen.query_one("#project").value = str(proj)
         await pilot.pause()
         names = [str(b.label) for b in app.screen.query("#presets Button")]
-        assert names == ["Claude", "Codex", "Смешанно", "Из конфига", "Заглушка"]
+        assert names == ["Claude", "Codex", "Смешанно", "Экономно", "Из конфига", "Заглушка"]
         await pilot.click("#preset-2")                          # «Смешанно»
         await pilot.pause()
         assert app.screen.chosen_models()["coder1"] == "codex/default"
@@ -412,3 +412,24 @@ async def test_start_screen_rejects_missing_folder(tmp_path, fast_mock):
         await pilot.pause()
         assert isinstance(app.screen, StartScreen) and app.orch is None
         assert "папк" in str(app.screen.query_one("#warn").content)
+
+
+async def test_click_on_panel_selects_it_for_alt_space(ui):
+    """Регрессия: в окне приложения alt+цифра может не дойти — личное окно открывалось только с менеджером.
+    Клик по панели выбирает её."""
+    from capricorn.tui import FocusScreen
+    app, pilot = ui
+    await pilot.click("#p-reviewer")
+    assert app.selected == "reviewer" and selected(app) == ["reviewer"]
+    assert "Ревьюер" in str(app.query_one("#status").content)
+    await pilot.press("alt+space")
+    assert isinstance(app.screen, FocusScreen) and app.screen.agent == "reviewer"
+
+
+async def test_alt_digit_inside_focus_window_does_not_crash(ui):
+    from capricorn.tui import FocusScreen
+    app, pilot = ui
+    await pilot.press("alt+space")
+    assert isinstance(app.screen, FocusScreen)
+    await pilot.press("alt+4")                       # панели — на главном экране, не в окне
+    assert app.selected == "coder1" and isinstance(app.screen, FocusScreen)

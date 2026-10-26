@@ -37,7 +37,7 @@ async def test_anthropic_streams_text_and_usage(http_mock):
     )
     reqs = http_mock(lambda r: httpx.Response(200, content=body))
     p = AnthropicProvider("anthropic", {"api_key": "k", "base_url": "https://proxy.local/"})
-    assert await collect(p, model="claude-x") == ("Привет", {"in": 12, "out": 5})
+    assert await collect(p, model="claude-x") == ("Привет", {"in": 12, "out": 5, "cached": 0})
 
     req, = reqs
     assert str(req.url) == "https://proxy.local/v1/messages"
@@ -82,7 +82,7 @@ async def test_openai_streams_and_sends_system_first(http_mock):
     reqs = http_mock(lambda r: httpx.Response(200, content=body))
     p = OpenAICompatProvider("ds", {"base_url": "https://api.ds.local/v1/", "api_key": "sk",
                                     "headers": {"X-Title": "capricorn"}})
-    assert await collect(p, model="deepseek-chat") == ("Hello", {"in": 7, "out": 2})
+    assert await collect(p, model="deepseek-chat") == ("Hello", {"in": 7, "out": 2, "cached": 0})
 
     req, = reqs
     assert str(req.url) == "https://api.ds.local/v1/chat/completions"
@@ -95,7 +95,7 @@ async def test_openai_streams_and_sends_system_first(http_mock):
 
 async def test_openai_without_key_sends_placeholder(http_mock):
     reqs = http_mock(lambda r: httpx.Response(200, content=sse("[DONE]")))
-    assert await collect(OpenAICompatProvider("ollama", {})) == ("", {"in": 0, "out": 0})
+    assert await collect(OpenAICompatProvider("ollama", {})) == ("", {"in": 0, "out": 0, "cached": 0})
     assert reqs[0].headers["authorization"] == "Bearer none"
     assert str(reqs[0].url) == "https://api.openai.com/v1/chat/completions"
 
@@ -246,7 +246,7 @@ async def test_anthropic_streams_tool_calls(http_mock):
     assert chunks == ["Читаю",
                       {"tool_calls": [{"id": "toolu_1", "name": "read_file", "args": {"path": "a.py"}},
                                       {"id": "toolu_2", "name": "list_files", "args": {}}]},
-                      {"usage": {"in": 3, "out": 9}}]
+                      {"usage": {"in": 3, "out": 9, "cached": 0}}]
     sent = json.loads(reqs[0].content)
     assert sent["tools"] == [{"name": "read_file", "description": "Прочитать",
                               "input_schema": {"type": "object", "properties": {}}}]
@@ -290,3 +290,21 @@ async def test_no_tools_means_no_tool_fields(http_mock):
     reqs = http_mock(lambda r: httpx.Response(200, content=sse("[DONE]")))
     await collect(OpenAICompatProvider("o", {}))
     assert "tools" not in json.loads(reqs[0].content)
+
+
+async def test_cached_tokens_are_reported_separately(http_mock):
+    """Кэш (повтор системного промпта) не смешиваем с новыми токенами — иначе счётчик пугает зря."""
+    body = sse({"type": "message_start", "message": {"usage": {
+                    "input_tokens": 40, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 60}}},
+               {"type": "message_delta", "usage": {"output_tokens": 5}})
+    http_mock(lambda r: httpx.Response(200, content=body))
+    _, usage = await collect(AnthropicProvider("a", {"api_key": "k"}))
+    assert usage == {"in": 100, "out": 5, "cached": 9000}
+
+
+async def test_openai_cached_tokens(http_mock):
+    body = sse({"choices": [], "usage": {"prompt_tokens": 1000, "completion_tokens": 3,
+                                         "prompt_tokens_details": {"cached_tokens": 900}}}, "[DONE]")
+    http_mock(lambda r: httpx.Response(200, content=body))
+    _, usage = await collect(OpenAICompatProvider("o", {}))
+    assert usage == {"in": 100, "out": 3, "cached": 900}

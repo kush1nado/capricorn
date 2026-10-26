@@ -42,10 +42,10 @@ def test_available_models_and_presets(tmp_path):
     cfg = load_config(str(p))
     both = start.available_models(cfg, {"claude-code": True, "codex": True})
     models = [m for _, m in both]
-    assert models[:3] == ["claude-code/sonnet", "claude-code/opus", "codex/default"]
+    assert models[:4] == ["claude-code/sonnet", "claude-code/opus", "claude-code/haiku", "codex/default"]
     assert "anthropic/claude-sonnet-5-5" in models and models[-1] == "mock/mock"
     ps = start.presets(cfg, both)
-    assert list(ps) == ["Claude", "Codex", "Смешанно", "Из конфига", "Заглушка"]
+    assert list(ps) == ["Claude", "Codex", "Смешанно", "Экономно", "Из конфига", "Заглушка"]
     assert ps["Смешанно"]["coder1"] == "codex/default" and ps["Смешанно"]["reviewer"] == "claude-code/sonnet"
     assert ps["Из конфига"]["reviewer"] == "anthropic/claude-sonnet-5-5"
 
@@ -80,3 +80,49 @@ def test_load_config_from_project_dir(tmp_path):
     assert load_config(base=proj).source == str(proj / "capricorn.yaml")
     assert load_config().budget == 30                          # текущая папка — без конфига
     assert set(load_config(base=proj).agents) == set(ROLES)
+
+
+def _codex_cache(home, models):
+    import json
+    d = home / ".codex"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "models_cache.json").write_text(json.dumps({"models": models}), encoding="utf-8")
+
+
+def test_codex_models_from_cache(isolated_home):
+    assert start.codex_models() == []
+    _codex_cache(isolated_home, [
+        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list"},
+        {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide"},
+        {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list"},
+    ])
+    assert start.codex_models() == [("GPT-6.1-Sol", "gpt-6.1-sol"), ("GPT-6-Luna", "gpt-6-luna")]
+
+
+def test_light_models_and_economy_preset(isolated_home):
+    _codex_cache(isolated_home, [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list"},
+                                 {"slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list"}])
+    cfg = load_config()
+    av = start.available_models(cfg, {"claude-code": True, "codex": True})
+    models = [m for _, m in av]
+    assert "claude-code/haiku" in models and "codex/gpt-6-luna" in models and "codex/gpt-6.1-sol" in models
+    ps = start.presets(cfg, av)
+    eco = ps["Экономно"]
+    assert eco["coder1"] == "codex/gpt-6-luna" and eco["tester"] == "codex/gpt-6-luna"
+    assert eco["manager"] == "claude-code/haiku" and eco["reviewer"] == "claude-code/haiku"
+
+    only_claude = start.available_models(cfg, {"claude-code": True, "codex": False})
+    assert set(start.presets(cfg, only_claude)["Экономно"].values()) == {"claude-code/haiku"}
+    only_codex = start.available_models(cfg, {"claude-code": False, "codex": True})
+    assert set(start.presets(cfg, only_codex)["Экономно"].values()) == {"codex/gpt-6-luna"}
+    none = start.available_models(cfg, {"claude-code": False, "codex": False})
+    assert "Экономно" not in start.presets(cfg, none)
+
+
+def test_codex_home_env(monkeypatch, tmp_path):
+    custom = tmp_path / "ch"
+    monkeypatch.setenv("CODEX_HOME", str(custom))
+    custom.mkdir()
+    (custom / "models_cache.json").write_text('{"models": [{"slug": "x", "display_name": "X", "visibility": "list"}]}',
+                                               encoding="utf-8")
+    assert start.codex_models() == [("X", "x")]

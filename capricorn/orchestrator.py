@@ -64,8 +64,8 @@ class Message:
 
 PERSONAL = ("private", "handoff")     # такие сообщения агент обрабатывает отдельным ходом и раньше командных
 HANDOFF_PROMPT = ("Личный диалог с пользователем закончен. Сформулируй итог для команды: какие решения "
-                  "приняты, о чём договорились, что и кому теперь делать. Только итог, без приветствий "
-                  "и без @упоминаний — его разошлют всем автоматически.")
+                  "приняты, о чём договорились, что и кому теперь делать. Итог разошлют всем автоматически; "
+                  "кому нужно действовать — упомяни через @ (он получит итог как задачу). Без приветствий.")
 
 
 class Agent:
@@ -79,8 +79,9 @@ class Agent:
         self.gen_task: asyncio.Task | None = None
         self._stop_requested = False        # отмену хода запросил /stop, а не отмена самого цикла
         self.status = "idle"
-        self.tokens_in = 0
+        self.tokens_in = 0                  # новые входные токены
         self.tokens_out = 0
+        self.tokens_cached = 0              # входные из кэша (повтор системного промпта и истории)
         self.turns = 0
 
     @property
@@ -90,7 +91,7 @@ class Agent:
     def set_status(self, status: str):
         self.status = status
         self.orch.emit("status", agent=self.name, status=status,
-                       tokens_in=self.tokens_in, tokens_out=self.tokens_out)
+                       tokens_in=self.tokens_in, tokens_out=self.tokens_out, tokens_cached=self.tokens_cached)
 
     async def loop(self):
         while True:
@@ -170,6 +171,7 @@ class Agent:
                         u = chunk.get("usage") or {}
                         self.tokens_in += u.get("in", 0)
                         self.tokens_out += u.get("out", 0)
+                        self.tokens_cached += u.get("cached", 0)
                         calls += chunk.get("tool_calls") or []
                         if chunk.get("status"):          # queued — ждёт слот CLI; thinking — дождался
                             self.set_status(chunk["status"])
@@ -292,6 +294,7 @@ class Orchestrator:
             "messages": [asdict(m) for m in self.messages],
             "agents": {n: {"history": a.history, "pending": [asdict(m) for m in a.pending],
                            "context": [asdict(m) for m in a.context], "tokens_in": a.tokens_in,
+                           "tokens_cached": a.tokens_cached,
                            "tokens_out": a.tokens_out, "turns": a.turns}
                        for n, a in self.agents.items()},
             "cli_sessions": {name: dict(p.sessions) for name, p in self.providers.items() if hasattr(p, "sessions")},
@@ -332,6 +335,7 @@ class Orchestrator:
             a.pending = [Message(**m) for m in st.get("pending") or []]
             a.context = [Message(**m) for m in st.get("context") or []]
             a.tokens_in, a.tokens_out, a.turns = st.get("tokens_in", 0), st.get("tokens_out", 0), st.get("turns", 0)
+            a.tokens_cached = st.get("tokens_cached", 0)
             a.status = "idle"
         for pname, sessions in (state.get("cli_sessions") or {}).items():
             p = self.providers.get(pname)
@@ -452,9 +456,12 @@ class Orchestrator:
         msg = Message(id=msg_id, sender=agent, to=others, content=text, kind="summary")
         self.messages.append(msg)
         self._log(msg)
+        # задачей — менеджеру и тем, кого упомянули (итог менеджера — обычно его поручения)
+        actors = {n for n in self.parse_targets(agent, text) if n in self.agents}
+        actors.add(self.cfg.default_target)
         for name in others:
             target = self.agents[name]
-            if name == self.cfg.default_target:
+            if name in actors:
                 target.pending.append(msg)
                 target.wake.set()
             else:
