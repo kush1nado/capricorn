@@ -4,3 +4,5 @@ capricorn.yaml
 .capricorn/
 .venv/
 .pytest_cache/
+dist/
+build/

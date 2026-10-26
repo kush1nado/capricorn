@@ -88,6 +88,19 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 - Не снимай скриншоты экрана владельца: окно может не выйти на передний план, и в кадр попадёт чужое.
   Цвета проверяй через `app.console.color_system` и `app.no_color`.
 
+## Режимы --web / --desktop и сборка
+
+- `--web`: textual-serve запускает **отдельный процесс** Capricorn на каждую вкладку (`web.child_command`).
+  Флаги режима в дочерний процесс не передавай, иначе он рекурсивно поднимет ещё один сервер.
+- `--desktop`: сервер запускается подпроцессом, а pywebview работает в главном потоке (так требует macOS).
+  Закрытие окна → `kill_tree`, на Windows через `taskkill /T`, на Unix через группу процессов.
+- Сборка: `python scripts/build.py` (PyInstaller, `packaging/capricorn.spec`) и в конце сразу smoke.
+  В сборке два исполняемых файла: оконный `Capricorn` и консольный `capricorn-cli`. Процессу интерфейса нужен stdout,
+  а у оконного exe его нет.
+- Textual грузит виджеты и драйверы динамически: при новых импортах проверь `hiddenimports` в spec.
+- Тесты с настоящими подпроцессами задают `HOME`/`USERPROFILE`: подмена `Path.home()` в них не действует.
+- Проверка окна без скриншотов: `Get-Process | ? MainWindowTitle`, дерево процессов через `Win32_Process`.
+
 ## CI и кроссплатформенность
 
 - `.github/workflows/tests.yml`: Windows, Ubuntu и macOS на Python 3.10 и 3.13. Поднял `requires-python` — подними
