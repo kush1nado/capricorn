@@ -1080,6 +1080,9 @@ class CapricornApp(App):
         self.selected = key
         for k in PANEL_ORDER:
             self.query_one(f"#p-{k}").set_class(k == key, "selected")
+        focused = self.focused
+        if getattr(focused, "key", key) != key and focused in self.screen_stack[0].query(".panel"):
+            self.query_one("#prompt").focus()   # иначе рамка :focus остаётся на прежней панели — выделены две
         if self.orch is not None:
             self.update_status()            # подсказка «alt+space → …» меняется сразу
 

@@ -433,3 +433,15 @@ async def test_alt_digit_inside_focus_window_does_not_crash(ui):
     assert isinstance(app.screen, FocusScreen)
     await pilot.press("alt+4")                       # панели — на главном экране, не в окне
     assert app.selected == "coder1" and isinstance(app.screen, FocusScreen)
+
+
+async def test_click_then_alt_digit_leaves_single_highlight(ui):
+    """Регрессия: клик ставил фокус на панель (жирная рамка :focus), alt+цифра переносила выбор,
+    а фокус оставался — выделенными выглядели обе панели."""
+    app, pilot = ui
+    await pilot.click("#p-reviewer")
+    assert app.focused is app.query_one("#p-reviewer")
+    await pilot.press("alt+2")
+    assert app.selected == "architect" and selected(app) == ["architect"]
+    focused = app.focused
+    assert focused is None or getattr(focused, "key", None) in (None, "architect")
