@@ -280,7 +280,7 @@ class GitPanel(Static, can_focus=True):
             t.append(f"  ↑{s.ahead} ↓{s.behind}",
                      style=COLORS["tester"] if s.ahead or s.behind else STEEL)
         t.append("\n")
-        t.append(f"●{s.staged} индекс  ", style=COLORS["coder1"])
+        t.append(f"●{s.staged} индекс  ", style=GREEN)
         t.append(f"±{s.modified} изм.  ", style=COLORS["reviewer"])
         t.append(f"+{s.untracked} новых", style=COLORS["coder2"])
         self._section(t, "КОММИТЫ")
@@ -537,80 +537,269 @@ class FocusScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+GREEN = "#39ff14"      # неоновый зелёный: добавленное, индекс
+CYAN = "#00e5ff"
+
+
+def render_diff(text: str) -> Text:
+    """Diff в палитре Capricorn: + зелёный, - красный, @@ голубой, служебное — сталь."""
+    out = Text()
+    for line in text.splitlines():
+        if line.startswith(("+++", "---", "diff --git", "index ", "new file", "deleted file", "similarity", "rename ")):
+            style = f"bold {BONE}"
+        elif line.startswith("+"):
+            style = GREEN
+        elif line.startswith("-"):
+            style = RED
+        elif line.startswith("@@"):
+            style = CYAN
+        elif line.startswith(("commit ", "Author", "AuthorDate", "Commit", "CommitDate", "Merge:")):
+            style = STEEL
+        else:
+            style = "#a8a29a"
+        out.append(line + "\n", style=style)
+    return out
+
+
+def git_message(out: str, ok: bool) -> str:
+    """Итог git-операции для строки сообщений: без служебных warning:/hint: (например, про CRLF)."""
+    lines = [line for line in out.splitlines() if line.strip() and not line.startswith(("warning:", "hint:"))]
+    return lines[-1] if lines else ("готово" if ok else "ошибка")
+
+
+def change_label(c) -> Text:
+    """Строка списка файлов: индекс зелёным, изменения красным, новое голубым, конфликт жирным красным."""
+    t = Text()
+    if c.conflict:
+        t.append("× ", style=f"bold {RED}")
+    else:
+        t.append("●" if c.staged else " ", style=GREEN)
+        t.append("±" if c.unstaged else ("+" if c.untracked else " "), style=CYAN if c.untracked else RED)
+        t.append(" ")
+    style = GREEN if c.staged and not c.unstaged else (CYAN if c.untracked else BONE)
+    t.append(c.path, style=style)
+    return t
+
+
+class InputModal(ModalScreen[str | None]):
+    BINDINGS = [Binding("escape", "dismiss(None)", "Отмена")]
+    DEFAULT_CSS = """
+    InputModal { align: center middle; background: rgba(5, 5, 6, 0.7); }
+    InputModal > Vertical { width: 80; height: auto; border: heavy #ff1a3c; background: #08080a; padding: 0 1; }
+    InputModal Label { color: #ff1a3c; text-style: bold; margin: 1 0 0 0; }
+    InputModal Input { border: tall #5c0a16; background: #08080a; }
+    InputModal .hint { color: #6e7681; margin-bottom: 1; }
+    """
+
+    def __init__(self, title: str, placeholder: str = ""):
+        super().__init__()
+        self.title_text = title
+        self.placeholder = placeholder
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(self.title_text)
+            yield Input(placeholder=self.placeholder, id="modal-input")
+            yield Static("enter — ок · esc — отмена", classes="hint")
+
+    def on_mount(self):
+        self.query_one("#modal-input").focus()
+
+    @on(Input.Submitted, "#modal-input")
+    def done(self, ev: Input.Submitted):
+        self.dismiss(ev.value.strip() or None)
+
+
+class ConfirmModal(ModalScreen[bool]):
+    BINDINGS = [Binding("y", "dismiss(True)", "Да"), Binding("n", "dismiss(False)", "Нет"),
+                Binding("escape", "dismiss(False)", "Нет")]
+    DEFAULT_CSS = """
+    ConfirmModal { align: center middle; background: rgba(5, 5, 6, 0.7); }
+    ConfirmModal > Vertical { width: 70; height: auto; border: heavy #ff1a3c; background: #08080a; padding: 1 2; }
+    ConfirmModal .hint { color: #6e7681; margin-top: 1; }
+    """
+
+    def __init__(self, text: str):
+        super().__init__()
+        self.text = text
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Text(self.text, style=f"bold {BONE}"))
+            yield Static("y — да · n / esc — нет", classes="hint")
+
+
 class GitScreen(ModalScreen[None]):
-    """Полноэкранный Git: ветки (enter — переключить) и коммиты (enter/стрелки — содержимое)."""
+    """Полноэкранный Git в духе lazygit: файлы (индекс, откат, коммит), ветки, коммиты, push/pull."""
     BINDINGS = [
         Binding("escape", "close", "Закрыть"),
         Binding("alt+space", "close", show=False, priority=True),
         Binding("alt+g", "close", show=False, priority=True),
         Binding("alt+o", "close", show=False, priority=True),
+        Binding("space", "toggle_stage", show=False),
+        Binding("a", "stage_all", show=False),
+        Binding("d", "discard", show=False),
+        Binding("c", "commit", show=False),
+        Binding("n", "new_branch", show=False),
+        Binding("p", "remote('pull')", show=False),
+        Binding("P", "remote('push')", show=False),
+        Binding("f", "remote('fetch')", show=False),
+        Binding("r", "refresh", show=False),
     ]
     DEFAULT_CSS = """
     GitScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
     GitScreen > Vertical { width: 96%; height: 94%; border: heavy #ff1a3c; background: #08080a; }
     GitScreen #git-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    GitScreen #git-keys { height: 1; background: #140205; color: #a8a29a; padding: 0 1; }
     GitScreen #git-left { width: 42%; }
     GitScreen .caption { color: #ff1a3c; text-style: bold; padding: 0 1; }
     GitScreen OptionList { border: solid #3d0710; background: #08080a; }
-    GitScreen OptionList:focus { border: heavy #ff1a3c; }
-    GitScreen #branches { height: 30%; }
+    GitScreen OptionList:focus { border: heavy #39ff14; }
+    GitScreen #files { height: 40%; }
+    GitScreen #branches { height: 20%; }
     GitScreen #commits { height: 1fr; }
     GitScreen #git-view { border: solid #3d0710; padding: 0 1; }
+    GitScreen #git-msg { height: 1; padding: 0 1; }
     """
 
     def __init__(self):
         super().__init__()
+        self.files: list = []
         self.branches: list[str] = []
         self.commits: list[tuple[str, str, str, str]] = []
-        self.shown = ""                 # текст показанного коммита
+        self.shown = ""                 # текст справа (diff файла или коммита)
+        self.current_branch = ""
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static("▓ GIT ┃ tab — между списками ┃ enter на ветке — переключить ┃ esc — закрыть", id="git-title")
+            yield Static("▓ GIT", id="git-title")
             with Horizontal():
                 with Vertical(id="git-left"):
+                    yield Label("ФАЙЛЫ", classes="caption")
+                    yield OptionList(id="files")
                     yield Label("ВЕТКИ", classes="caption")
                     yield OptionList(id="branches")
                     yield Label("КОММИТЫ", classes="caption")
                     yield OptionList(id="commits")
                 with VerticalScroll(id="git-view"):
-                    yield Static("выбери коммит", id="commit-view")
+                    yield Static("", id="commit-view")
+            yield Static("", id="git-msg")
+            yield Static("пробел индекс · a всё · d откатить · c коммит · n ветка · p pull · P push · f fetch · "
+                         "r обновить · tab — списки · esc", id="git-keys")
 
     def on_mount(self):
         self.reload()
-        self.query_one("#commits").focus()
+        self.query_one("#files").focus()
+
+    @property
+    def git(self):
+        return self.app.orch.git
+
+    def message(self, text: str, ok: bool = True):
+        self.query_one("#git-msg", Static).update(Text(text, style=GREEN if ok else f"bold {RED}"))
+
+    def show(self, text: str):
+        self.shown = text
+        self.query_one("#commit-view", Static).update(render_diff(text) if text else Text("нет изменений", style=STEEL))
 
     @work(exclusive=True, group="git-screen")
     async def reload(self):
-        git = self.app.orch.git
-        snap = await git.snapshot()
+        snap = await self.git.snapshot()
+        self.current_branch = snap.branch
+        track = f" → {snap.upstream} ↑{snap.ahead} ↓{snap.behind}" if snap.upstream else ""
+        self.query_one("#git-title", Static).update(f"▓ GIT ┃ {snap.branch}{track}")
+        self.files = await self.git.changes()
         self.branches = snap.branches
-        self.commits = await git.commits()
+        self.commits = await self.git.commits()
+        fl = self.query_one("#files", OptionList)
+        keep = fl.highlighted
+        fl.clear_options()
+        fl.add_options([change_label(c) for c in self.files] or [Text("чисто — нечего коммитить", style=STEEL)])
         bl = self.query_one("#branches", OptionList)
         bl.clear_options()
-        bl.add_options([("► " if b == snap.branch else "  ") + b for b in self.branches])
+        bl.add_options([Text(("► " if b == snap.branch else "  ") + b, style=f"bold {GREEN}" if b == snap.branch else BONE)
+                        for b in self.branches])
         cl = self.query_one("#commits", OptionList)
         cl.clear_options()
-        cl.add_options([f"{h[:7]}  {subj[:70]}  · {when}" for h, when, _, subj in self.commits])
-        if self.commits:
-            cl.highlighted = 0
+        cl.add_options([Text.assemble((h[:7], RED), "  ", (subj[:70], BONE), (f"  · {when}", STEEL))
+                        for h, when, _, subj in self.commits])
+        if self.files:
+            fl.highlighted = min(keep or 0, len(self.files) - 1)
+            self.preview_file(self.files[fl.highlighted])
+        elif self.commits:
             self.show_commit(self.commits[0][0])
 
     @work(exclusive=True, group="git-show")
     async def show_commit(self, sha: str):
-        text = await self.app.orch.git.show(sha)
-        self.shown = text
-        self.query_one("#commit-view", Static).update(Syntax(text, "diff", theme=CODE_THEME, word_wrap=True))
+        self.show(await self.git.show(sha))
+
+    @work(exclusive=True, group="git-show")
+    async def preview_file(self, change):
+        self.show(await self.git.file_diff(change))
 
     @on(OptionList.OptionHighlighted, "#commits")
-    def preview(self, ev: OptionList.OptionHighlighted):
+    def preview_commit(self, ev: OptionList.OptionHighlighted):
         if 0 <= ev.option_index < len(self.commits):
             self.show_commit(self.commits[ev.option_index][0])
 
+    @on(OptionList.OptionHighlighted, "#files")
+    def preview_change(self, ev: OptionList.OptionHighlighted):
+        if 0 <= ev.option_index < len(self.files):
+            self.preview_file(self.files[ev.option_index])
+
     @on(OptionList.OptionSelected, "#branches")
     def switch(self, ev: OptionList.OptionSelected):
-        self.app.switch_branch(self.branches[ev.option_index])
-        self.set_timer(1.0, self.reload)
+        self.run_git(self.git.switch, self.branches[ev.option_index])
+
+    # ------------------------------------------------------------ действия
+    def selected_change(self):
+        fl = self.query_one("#files", OptionList)
+        if self.focused is fl and fl.highlighted is not None and fl.highlighted < len(self.files):
+            return self.files[fl.highlighted]
+        return None
+
+    @work(group="git-op")
+    async def run_git(self, op, *args):
+        ok, out = await op(*args)
+        self.message(git_message(out, ok), ok)
+        self.reload()
+        self.app.refresh_git()
+
+    def action_toggle_stage(self):
+        c = self.selected_change()
+        if c is not None:
+            self.run_git(self.git.unstage if c.staged and not c.unstaged else self.git.stage, c.path)
+
+    def action_stage_all(self):
+        if self.files:
+            all_staged = all(c.staged and not c.unstaged for c in self.files)
+            self.run_git(self.git.unstage_all if all_staged else self.git.stage_all)
+
+    def action_discard(self):
+        c = self.selected_change()
+        if c is None:
+            return
+        what = "удалить новый файл" if c.untracked or c.x == "A" else "откатить изменения"
+        self.app.push_screen(ConfirmModal(f"{what}: {c.path}?\nЭто нельзя отменить."),
+                             lambda yes: yes and self.run_git(self.git.discard, c))
+
+    def action_commit(self):
+        if not any(c.staged for c in self.files):
+            self.message("в индексе пусто — сначала пробел (файл) или a (всё)", ok=False)
+            return
+        self.app.push_screen(InputModal("СООБЩЕНИЕ КОММИТА", "что сделано"),
+                             lambda msg: msg and self.run_git(self.git.commit, msg))
+
+    def action_new_branch(self):
+        self.app.push_screen(InputModal(f"НОВАЯ ВЕТКА от {self.current_branch}", "feature/имя"),
+                             lambda name: name and self.run_git(self.git.create_branch, name))
+
+    def action_remote(self, op: str):
+        self.message(f"{op}…")
+        self.run_git(getattr(self.git, op))
+
+    def action_refresh(self):
+        self.reload()
 
     def action_close(self):
         self.dismiss(None)

@@ -445,3 +445,78 @@ async def test_click_then_alt_digit_leaves_single_highlight(ui):
     assert app.selected == "architect" and selected(app) == ["architect"]
     focused = app.focused
     assert focused is None or getattr(focused, "key", None) in (None, "architect")
+
+
+# ------------------------------------------------------- lazygit в Git-окне
+
+async def open_git(app, pilot):
+    from capricorn.tui import GitScreen
+    await pilot.press("alt+g")
+    assert isinstance(app.screen, GitScreen)
+    await wait_for(pilot, lambda: app.screen.commits)
+    return app.screen
+
+
+async def test_git_screen_stage_commit_branch(ui_git):
+    from capricorn.tui import InputModal
+    app, pilot = ui_git
+    repo = app.orch.toolbox.root
+    (repo / "a.txt").write_text("changed", encoding="utf-8")
+    (repo / "new.txt").write_text("fresh", encoding="utf-8")
+    scr = await open_git(app, pilot)
+    await wait_for(pilot, lambda: len(scr.files) == 2)
+    await wait_for(pilot, lambda: "+changed" in scr.shown or "+fresh" in scr.shown)   # diff файла справа
+
+    await pilot.press("c")                                           # в индексе пусто — подсказка, без окна
+    assert not isinstance(app.screen, InputModal) and "индексе пусто" in str(scr.query_one("#git-msg").content)
+
+    await pilot.press("a")
+    await wait_for(pilot, lambda: scr.files and all(c.staged for c in scr.files))
+    await pilot.press("c")
+    assert isinstance(app.screen, InputModal)
+    app.screen.query_one("#modal-input").value = "коммит из Capricorn"
+    await pilot.press("enter")
+    await wait_for(pilot, lambda: scr.commits and scr.commits[0][3] == "коммит из Capricorn")
+    assert scr.files == []
+
+    await pilot.press("n")
+    app.screen.query_one("#modal-input").value = "feature/ui"
+    await pilot.press("enter")
+    await wait_for(pilot, lambda: scr.current_branch == "feature/ui")
+
+
+async def test_git_screen_toggle_and_discard(ui_git):
+    from capricorn.tui import ConfirmModal
+    app, pilot = ui_git
+    repo = app.orch.toolbox.root
+    (repo / "a.txt").write_text("oops", encoding="utf-8")
+    scr = await open_git(app, pilot)
+    await wait_for(pilot, lambda: len(scr.files) == 1)
+    await pilot.press("space")
+    await wait_for(pilot, lambda: scr.files and scr.files[0].staged)
+    await pilot.press("space")
+    await wait_for(pilot, lambda: scr.files and not scr.files[0].staged)
+    await pilot.press("d")
+    assert isinstance(app.screen, ConfirmModal)
+    await pilot.press("n")                                           # отказ — файл не трогаем
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "oops"
+    await pilot.press("d", "y")
+    await wait_for(pilot, lambda: scr.files == [])
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "a"
+
+
+def test_render_diff_colors():
+    from capricorn.tui import GREEN, RED, render_diff
+    t = render_diff("diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n ctx")
+    styles = {span.style for span in t.spans}
+    assert GREEN in styles and RED in styles
+    assert t.plain.splitlines() == ["diff --git a/x b/x", "@@ -1 +1 @@", "-old", "+new", " ctx"]
+
+
+def test_git_message_drops_warnings_and_hints():
+    from capricorn.tui import git_message
+    out = "warning: in the working copy of 'calc.py', LF will be replaced by CRLF\nhint: use --force\n"
+    assert git_message(out, ok=True) == "готово"
+    assert git_message(out + "error: failed to push some refs\n", ok=False) == "error: failed to push some refs"
+    assert git_message("[main 1a2b3c] коммит\n 1 file changed", ok=True) == " 1 file changed"
+    assert git_message("", ok=False) == "ошибка"

@@ -3,18 +3,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
 
 
-async def run(*args: str, cwd: str, timeout: float = 8) -> tuple[int, str]:
+async def run(*args: str, cwd: str, timeout: float = 8, strip: bool = True,
+              env: dict[str, str] | None = None, stderr: bool = True) -> tuple[int, str]:
     """Команда с таймаутом. По таймауту или отмене процесс убивается — иначе он живёт дальше
-    и держит пайпы (например, git-команда при выходе из приложения)."""
+    и держит пайпы (например, git-команда при выходе из приложения).
+    strip=False — для вывода, где важны ведущие пробелы (git status --porcelain).
+    stderr=False — только stdout: в diff не должны попадать предупреждения git (например, про CRLF)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *args, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,       # не наследуем stdin интерфейса
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT if stderr else asyncio.subprocess.DEVNULL,
+            env={**os.environ, **env} if env else None)
     except (FileNotFoundError, NotADirectoryError) as e:
         return 1, str(e)
     try:
@@ -25,7 +31,8 @@ async def run(*args: str, cwd: str, timeout: float = 8) -> tuple[int, str]:
     except asyncio.CancelledError:
         await _reap(proc)
         raise
-    return proc.returncode or 0, out.decode(errors="replace").strip()
+    text = out.decode(errors="replace")
+    return proc.returncode or 0, text.strip() if strip else text
 
 
 async def _reap(proc: asyncio.subprocess.Process) -> None:
@@ -37,6 +44,33 @@ async def _reap(proc: asyncio.subprocess.Process) -> None:
         await asyncio.wait_for(proc.wait(), 5)
     except (asyncio.TimeoutError, asyncio.CancelledError):
         pass
+
+
+NO_PROMPT = {"GIT_TERMINAL_PROMPT": "0"}     # push/pull без «введите пароль» — сразу ошибка, а не зависание
+
+
+@dataclass
+class FileChange:
+    """Строка git status: x — индекс, y — рабочая копия."""
+    path: str
+    x: str
+    y: str
+
+    @property
+    def untracked(self) -> bool:
+        return self.x == "?"
+
+    @property
+    def staged(self) -> bool:
+        return self.x not in (" ", "?")
+
+    @property
+    def unstaged(self) -> bool:
+        return self.y not in (" ",) and not self.untracked
+
+    @property
+    def conflict(self) -> bool:
+        return "U" in self.x + self.y or self.x + self.y in ("AA", "DD")
 
 
 @dataclass
@@ -143,10 +177,94 @@ class GitWatcher:
         if not commit or not all(c in "0123456789abcdefABCDEF" for c in commit):
             return f"некорректный хэш: {commit!r}"
         code, out = await run("git", "show", "--stat", "--patch", "--no-color", "--format=fuller", commit,
-                              cwd=self.repo, timeout=20)
+                              cwd=self.repo, timeout=20, stderr=False)
         if code != 0:
             return out[:500]
         return out if len(out) <= limit else out[:limit] + "\n… [обрезано]"
+
+    # ------------------------------------------------- lazygit-операции
+    async def changes(self) -> list[FileChange]:
+        code, out = await run("git", "status", "--porcelain=v1", "-z", "-uall", cwd=self.repo, strip=False)
+        if code != 0:
+            return []
+        parts = out.split("\0")
+        result, i = [], 0
+        while i < len(parts):
+            entry = parts[i]
+            i += 1
+            if len(entry) < 4:
+                continue
+            x, y, path = entry[0], entry[1], entry[3:]
+            if x in "RC":                   # переименование: следом идёт старый путь — пропускаем
+                i += 1
+            result.append(FileChange(path, x, y))
+        return result
+
+    async def _git(self, *args: str, timeout: float = 30, env: dict | None = None) -> tuple[bool, str]:
+        code, out = await run("git", *args, cwd=self.repo, timeout=timeout, env=env)
+        return code == 0, out
+
+    async def stage(self, path: str) -> tuple[bool, str]:
+        return await self._git("add", "--", path)
+
+    async def unstage(self, path: str) -> tuple[bool, str]:
+        ok, out = await self._git("restore", "--staged", "--", path)
+        if not ok:                          # в репозитории ещё нет коммитов — restore не умеет
+            ok, out = await self._git("rm", "--cached", "-q", "--", path)
+        return ok, out
+
+    async def stage_all(self) -> tuple[bool, str]:
+        return await self._git("add", "-A")
+
+    async def unstage_all(self) -> tuple[bool, str]:
+        return await self._git("reset", "-q")
+
+    async def discard(self, change: FileChange) -> tuple[bool, str]:
+        """Откатить изменения файла. Новый (неотслеживаемый или только добавленный) файл удаляется."""
+        if change.untracked:
+            return await self._git("clean", "-f", "-q", "--", change.path)
+        if change.x == "A":
+            return await self._git("rm", "-f", "-q", "--", change.path)
+        return await self._git("restore", "--source=HEAD", "--staged", "--worktree", "--", change.path)
+
+    async def file_diff(self, change: FileChange, limit: int = 200_000) -> str:
+        if change.untracked:
+            try:
+                with open(os.path.join(self.repo, change.path), encoding="utf-8", errors="replace") as f:
+                    body = f.read(limit)
+            except OSError as e:
+                return str(e)
+            return f"новый файл {change.path}\n" + "".join(f"+{line}\n" for line in body.splitlines())
+        parts = []
+        if change.staged:
+            _, staged = await run("git", "diff", "--cached", "--no-color", "--", change.path, cwd=self.repo,
+                                  timeout=20, stderr=False)
+            parts.append(staged)
+        if change.unstaged:
+            _, unstaged = await run("git", "diff", "--no-color", "--", change.path, cwd=self.repo,
+                                    timeout=20, stderr=False)
+            parts.append(unstaged)
+        text = "\n".join(p for p in parts if p)
+        return text[:limit] if text else "(нет текстовых изменений)"
+
+    async def commit(self, message: str) -> tuple[bool, str]:
+        if not message.strip():
+            return False, "пустое сообщение коммита"
+        return await self._git("commit", "-m", message, timeout=600)     # с хуками репозитория — могут быть долгими
+
+    async def create_branch(self, name: str) -> tuple[bool, str]:
+        if not name.strip() or name.startswith("-"):
+            return False, f"некорректное имя ветки: {name!r}"
+        return await self._git("switch", "-c", name.strip())
+
+    async def push(self) -> tuple[bool, str]:
+        return await self._git("push", timeout=180, env=NO_PROMPT)
+
+    async def pull(self) -> tuple[bool, str]:
+        return await self._git("pull", "--ff-only", timeout=180, env=NO_PROMPT)
+
+    async def fetch(self) -> tuple[bool, str]:
+        return await self._git("fetch", "--prune", timeout=180, env=NO_PROMPT)
 
     async def switch(self, branch: str) -> tuple[bool, str]:
         code, out = await run("git", "switch", branch, cwd=self.repo)
