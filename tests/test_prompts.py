@@ -88,3 +88,8 @@ def test_native_reviewer_without_shell_reads_files_instead_of_git():
 
 def test_protocol_forbids_echoing_header():
     assert "[от" in system_prompt("manager", ROSTER, "ru", "") and "не пиши" in system_prompt("manager", ROSTER, "ru", "")
+
+
+def test_disputes_are_decided_by_user():
+    sp = system_prompt("manager", ROSTER, "ru", "")
+    assert "Голосований нет" in sp and "@user" in sp
