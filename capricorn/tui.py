@@ -125,7 +125,7 @@ class AgentPanel(LogPanel):
         self._render_subtitle()
 
     def _render_subtitle(self):
-        icon = {"idle": "▫", "error": "×", "stopped": "■", "waiting budget": "‖"}.get(
+        icon = {"idle": "▫", "error": "×", "stopped": "■", "waiting budget": "‖", "queued": "…"}.get(
             self.status, SPIN[self._spin % len(SPIN)])
         self.set_class(self.status in ACTIVE, "active")
         self.set_class(self.status == "error", "failed")

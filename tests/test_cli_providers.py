@@ -340,3 +340,31 @@ async def test_native_workspace_shell_flag_depends_on_provider(git_orch):
     assert (await orch.native_workspace("reviewer"))["shell"] is False
     assert (await orch.native_workspace("architect"))["shell"] is True
     assert (await orch.native_workspace("coder1"))["shell"] is True       # пишущему — тесты в Bash
+
+
+async def test_cli_parallel_runs_are_limited(fake, tmp_path):
+    """Не больше max_parallel одновременных запусков CLI — иначе параллельные ходы упираются в лимиты подписки."""
+    slow = [{"events": [{"type": "thread.started", "thread_id": "t"},
+                        {"type": "item.completed", "item": {"type": "agent_message", "text": "ок"}},
+                        {"type": "turn.completed", "usage": {}}], "sleep": 0.6}]
+    p = CodexProvider("codex", {"command": fake(slow), "max_parallel": 1})
+    loop = asyncio.get_running_loop()
+    spans = {}
+
+    async def run(agent):
+        start = loop.time()
+        out = await collect(p, agent=agent, workspace=ws(tmp_path))
+        spans[agent] = (start, loop.time(), out)
+
+    await asyncio.gather(run("coder1"), run("coder2"))
+    (s1, e1, o1), (s2, e2, o2) = sorted(spans.values())
+    assert max(e1, e2) - min(s1, s2) >= 1.1                 # шли по очереди, а не вместе
+    queued = [o for o in (o1, o2) if {"status": "queued"} in o]
+    assert len(queued) == 1                                   # второй ждал слот и сообщил об этом
+    assert {"status": "thinking"} in queued[0]
+
+
+def test_cli_max_parallel_default_and_validation():
+    assert CodexProvider("codex", {}).max_parallel == 2
+    assert ClaudeCodeProvider("cc", {"max_parallel": 4}).max_parallel == 4
+    assert CodexProvider("codex", {"max_parallel": 0}).max_parallel == 1

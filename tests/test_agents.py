@@ -4,7 +4,7 @@ import asyncio
 import pytest
 
 from capricorn.orchestrator import USER
-from helpers import kinds, messages, settle
+from helpers import ScriptedProvider, kinds, messages, settle
 
 
 def assert_alternates(history):
@@ -402,3 +402,19 @@ async def test_echoed_protocol_header_is_stripped(make_orch, reply):
     await settle(orch)
     msg, = [m for m in messages(events) if m.sender == "manager"]
     assert msg.content == "Готово. @user" and msg.to == ["user"]
+
+
+async def test_provider_status_chunks_update_agent_status(make_orch):
+    class Queued(ScriptedProvider):
+        async def stream(self, **kw):
+            yield {"status": "queued"}
+            yield {"status": "thinking"}
+            async for c in super().stream(**kw):
+                yield c
+
+    orch, events = make_orch()
+    orch.providers["script"] = Queued({"manager": "ок"})
+    orch.user_says("x")
+    await settle(orch)
+    statuses = [d["status"] for d in kinds(events, "status") if d["agent"] == "manager"]
+    assert statuses[:3] == ["thinking", "queued", "thinking"] and statuses[-1] == "idle"

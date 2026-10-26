@@ -66,6 +66,30 @@ class AgentCLIProvider(Provider):
     def __init__(self, name: str, conf: dict):
         super().__init__(name, conf)
         self.sessions: dict[str, str] = {}
+        # параллельные запуски CLI упираются в лимиты подписки — ограничиваем
+        self.max_parallel = max(1, int(conf.get("max_parallel", 2)))
+        self._sem: asyncio.Semaphore | None = None
+
+    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                     tools=None, tool_choice="auto", workspace: dict | None = None):
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self.max_parallel)
+        queued = self._sem.locked()
+        if queued:
+            yield {"status": "queued"}          # ждём свободный слот — видно в панели агента
+        async with self._sem:
+            if queued:
+                yield {"status": "thinking"}
+            inner = self._stream(model=model, system=system, messages=messages, temperature=temperature,
+                                 max_tokens=max_tokens, agent=agent, workspace=workspace)
+            async with contextlib.aclosing(inner):
+                async for chunk in inner:
+                    yield chunk
+
+    async def _stream(self, *, model, system, messages, temperature, max_tokens, agent,
+                      workspace: dict | None = None):
+        raise NotImplementedError
+        yield  # pragma: no cover
 
     # ----------------------------------------------------------- настройка
     def reset(self, agent: str | None = None) -> None:
@@ -161,7 +185,7 @@ class CodexProvider(AgentCLIProvider):
             args += ["resume", session]
         return [*args, "-"]
 
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+    async def _stream(self, *, model, system, messages, temperature, max_tokens, agent,
                      tools=None, tool_choice="auto", workspace: dict | None = None):
         ws = workspace or {"path": os.getcwd(), "write": False}
         session = self.sessions.get(agent)
@@ -226,7 +250,7 @@ class ClaudeCodeProvider(AgentCLIProvider):
             args += ["--resume", session]
         return args
 
-    async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
+    async def _stream(self, *, model, system, messages, temperature, max_tokens, agent,
                      tools=None, tool_choice="auto", workspace: dict | None = None):
         ws = workspace or {"path": os.getcwd(), "write": False}
         session = self.sessions.get(agent)

@@ -56,9 +56,11 @@ providers:
   # модель: codex/default или codex/<id>, claude-code/default или claude-code/sonnet.
   codex:                # Codex CLI (подписка ChatGPT); на Windows найдётся и в установке приложения Codex
     type: codex
+    max_parallel: 2     # сколько агентов одновременно гоняют этот CLI (остальные ждут: статус QUEUED)
     # command: C:\path\to\codex.exe
   claude-code:          # Claude Code CLI (подписка Claude); сначала: claude → /login
     type: claude-code
+    max_parallel: 2
 
 # model: "<провайдер>/<id модели>"
 agents:

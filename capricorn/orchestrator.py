@@ -150,6 +150,8 @@ class Agent:
                         self.tokens_in += u.get("in", 0)
                         self.tokens_out += u.get("out", 0)
                         calls += chunk.get("tool_calls") or []
+                        if chunk.get("status"):          # queued — ждёт слот CLI; thinking — дождался
+                            self.set_status(chunk["status"])
                         if chunk.get("note"):            # действие CLI-агента его же инструментом
                             self.set_status("working")
                             sep = "\n" if display and not display.endswith("\n") else ""
