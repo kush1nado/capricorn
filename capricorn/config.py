@@ -50,6 +50,7 @@ class ToolsConfig:
     test_command: str | list[str] = "python -m pytest -q"
     test_timeout: int = 300
     max_rounds: int = 12                # раундов «модель → инструменты» за один ход
+    worktrees: bool = True              # свой git worktree у каждого кодера и тестировщика
 
 
 @dataclass
@@ -104,6 +105,7 @@ def load_config(path: str | None = None, force_mock: bool = False) -> Config:
         test_command=t.get("test_command", ToolsConfig.test_command),
         test_timeout=int(t.get("test_timeout", 300)),
         max_rounds=int(t.get("max_rounds", 12)),
+        worktrees=bool(t.get("worktrees", True)),
     )
 
     agents_raw = raw.get("agents") or {}

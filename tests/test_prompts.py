@@ -48,3 +48,14 @@ def test_coder_without_tools_gets_code_block_hint():
 def test_reviewer_read_only_tools():
     sp = system_prompt("reviewer", ROSTER, "ru", "", tools=["read_file", "git_diff"])
     assert "git_diff" in sp and "write_file" not in sp and "Инструментов записи" not in sp
+
+
+def test_worktree_hints_per_role():
+    coder = system_prompt("coder2", ROSTER, "ru", "", tools=["write_file", "sync_branch"], worktrees=True)
+    assert "своей ветке capricorn/coder2" in coder and "merge_work" not in coder
+    rev = system_prompt("reviewer", ROSTER, "ru", "", tools=["git_diff"], worktrees=True)
+    assert 'git_diff(worktree="coder1")' in rev and "своей ветке" not in rev
+    mgr = system_prompt("manager", ROSTER, "ru", "", tools=["git_diff", "merge_work"], worktrees=True)
+    assert "merge_work(agent=" in mgr and 'worktree="coder1"' in mgr
+    plain = system_prompt("reviewer", ROSTER, "ru", "", tools=["git_diff"], worktrees=False)
+    assert "worktree" not in plain

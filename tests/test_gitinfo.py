@@ -86,3 +86,46 @@ async def test_context_for_agents_lists_files(tmp_path):
     assert ctx.startswith("Ветка: main.")
     assert "many files" in ctx and "f00.py" in ctx
     assert "… и ещё 5" in ctx and "f84.py" not in ctx
+
+
+async def _child_pid(pidfile):
+    import asyncio
+    for _ in range(200):
+        if pidfile.exists() and pidfile.read_text():
+            return int(pidfile.read_text())
+        await asyncio.sleep(0.02)
+    raise AssertionError("дочерний процесс не стартовал")
+
+
+def _sleeper(pidfile):
+    import sys
+    return (sys.executable, "-c", f"import os, time; open(r'{pidfile}', 'w').write(str(os.getpid())); time.sleep(30)")
+
+
+async def test_run_kills_process_on_timeout(tmp_path):
+    """Регрессия: по таймауту процесс оставался жить (и держал пайпы)."""
+    import asyncio
+    from capricorn.gitinfo import run
+    from test_web import _alive
+    pidfile = tmp_path / "pid"
+    code, out = await run(*_sleeper(pidfile), cwd=str(tmp_path), timeout=1)
+    assert code == 1
+    pid = await _child_pid(pidfile)
+    await asyncio.sleep(0.3)
+    assert not _alive(pid)
+
+
+async def test_run_kills_process_on_cancel(tmp_path):
+    import asyncio
+    from capricorn.gitinfo import run
+    from test_web import _alive
+    pidfile = tmp_path / "pid"
+    task = asyncio.create_task(run(*_sleeper(pidfile), cwd=str(tmp_path), timeout=30))
+    pid = await _child_pid(pidfile)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    await asyncio.sleep(0.3)
+    assert not _alive(pid)

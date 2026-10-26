@@ -9,13 +9,33 @@ from dataclasses import dataclass, field
 
 
 async def run(*args: str, cwd: str, timeout: float = 8) -> tuple[int, str]:
+    """Команда с таймаутом. По таймауту или отмене процесс убивается — иначе он живёт дальше
+    и держит пайпы (например, git-команда при выходе из приложения)."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *args, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-        return proc.returncode or 0, out.decode(errors="replace").strip()
-    except (FileNotFoundError, asyncio.TimeoutError) as e:
+    except (FileNotFoundError, NotADirectoryError) as e:
         return 1, str(e)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        await _reap(proc)
+        return 1, f"таймаут {timeout} с: {' '.join(args[:3])}"
+    except asyncio.CancelledError:
+        await _reap(proc)
+        raise
+    return proc.returncode or 0, out.decode(errors="replace").strip()
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), 5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
 
 
 @dataclass

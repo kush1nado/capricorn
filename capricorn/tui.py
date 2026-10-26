@@ -50,6 +50,7 @@ HELP = """\
   /branch <имя>                 — git switch (или ctrl+b)
   /zoom <агент|git|feed>        — развернуть панель (esc — назад)
   /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
+  /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
   /budget N  /help  /quit
 [b]Клавиши[/b]: F5 пауза · F8 стоп · ctrl+b ветки · alt+1..9 развернуть панель · esc свернуть"""
 
@@ -489,6 +490,8 @@ class CapricornApp(App):
                 lines.append(f"тесты: {cmdline if tc.run_tests else 'выключены'} · "
                              f"запись: {'да' if tc.write else 'нет'} · раундов за ход: {tc.max_rounds}")
                 self.feed.system("\n".join(lines))
+        elif cmd == "worktrees":
+            self.show_worktrees(args[0].lower() if args else "")
         elif cmd == "models":
             self.feed.system("\n".join(f"{n:9} {a.model}" for n, a in self.cfg.agents.items())
                              + "\nпровайдеры: " + ", ".join(o.providers))
@@ -524,6 +527,23 @@ class CapricornApp(App):
             return
         self.push_screen(BranchPicker(self.snapshot.branches, self.snapshot.branch),
                          lambda b: b and self.switch_branch(b))
+
+    @work(group="git")
+    async def show_worktrees(self, sub: str = ""):
+        wts = self.orch.toolbox.worktrees
+        if not wts.active:
+            self.feed.system("worktree выключены: нужен git-репозиторий с коммитами и tools.worktrees: true")
+            return
+        try:
+            if sub == "prune":
+                removed = await wts.prune(self.orch.roster)
+                self.feed.system(f"убраны влитые worktree: {', '.join(removed)}" if removed
+                                 else "убирать нечего: у всех есть невлитая работа или worktree не созданы")
+            else:
+                self.feed.system("\n".join(await wts.status(self.orch.roster)))
+        except Exception as e:  # noqa: BLE001
+            self.feed.system(f"▲ {e}", "error")
+        self.refresh_git()
 
     @work(group="git")
     async def switch_branch(self, branch: str):

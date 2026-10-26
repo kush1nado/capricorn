@@ -88,6 +88,17 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 - Не снимай скриншоты экрана владельца: окно может не выйти на передний план, и в кадр попадёт чужое.
   Цвета проверяй через `app.console.color_system` и `app.no_color`.
 
+## Worktree агентов
+
+- `capricorn/worktrees.py`: ветка `capricorn/<агент>`, путь `<git-common-dir>/capricorn/worktrees/<агент>`.
+  Активны только в git-репозитории с коммитами и при `tools.write`/`tools.worktrees`.
+- Пишущие агенты (кодеры и тестировщик) всегда работают в своём worktree. Остальные смотрят в чужой через параметр `worktree`
+  (добавляется в схему динамически, `Toolbox.spec`). Новый «смотрящий» инструмент добавь в `PEEK_TOOLS`.
+- Служебные git-коммиты: `identity(agent)` и `--no-verify`, иначе хуки репозитория (тесты, версия) ломают работу агентов.
+- Тесты: `tests/test_worktrees.py` на настоящем git. Хелперы вызова — с позиционными параметрами (`ok(box, who, tool, /, **args)`),
+  иначе имя аргумента инструмента (`agent`) столкнётся с параметром хелпера.
+- `gitinfo.run` убивает процесс по таймауту и отмене. Новый код с subprocess должен делать так же.
+
 ## Режимы --web / --desktop и сборка
 
 - `--web`: textual-serve запускает **отдельный процесс** Capricorn на каждую вкладку (`web.child_command`).

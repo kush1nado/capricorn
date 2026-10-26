@@ -16,6 +16,7 @@ tools:                  # инструменты агентов: работаю�
   test_command: python -m pytest -q   # строка или список: [npm, test]
   test_timeout: 300     # секунд
   max_rounds: 12        # раундов «модель → инструменты» за один ход
+  worktrees: true       # у каждого кодера и тестировщика своя ветка и git worktree
 
 providers:
   anthropic:

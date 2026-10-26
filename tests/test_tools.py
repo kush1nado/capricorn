@@ -25,7 +25,10 @@ def repo(tmp_path):
 
 @pytest.fixture
 def box(repo):
-    return Toolbox(repo, load_config())
+    """Общий режим (без worktree) — worktree проверяются в test_worktrees.py."""
+    cfg = load_config()
+    cfg.tools.worktrees = False
+    return Toolbox(repo, cfg)
 
 
 async def ok(box, name, agent="coder1", **args):
@@ -47,7 +50,7 @@ def test_role_permissions(box):
     assert box.allowed("architect") == ROLE_TOOLS["architect"]
     assert "write_file" not in box.allowed("architect")
     assert "write_file" not in box.allowed("reviewer") and "run_tests" in box.allowed("reviewer")
-    assert box.allowed("coder3") == ROLE_TOOLS["coder"]
+    assert box.allowed("coder3") == [t for t in ROLE_TOOLS["coder"] if t != "sync_branch"]   # без worktree
     assert box.allowed("manager") == ["list_files", "read_file", "git_diff"]
     spec = {s["name"]: s for s in box.specs_for("coder1")}
     assert spec["edit_file"]["parameters"]["required"] == ["path", "old", "new"]

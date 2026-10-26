@@ -64,12 +64,19 @@ TOOL_HINTS = {
               "на что смотреть."),
     "diff": "- Чужие изменения смотри через git_diff (новые файлы — через read_file).",
     "tests": "- Проверяй изменения через run_tests и пересказывай суть вывода (что упало и почему).",
+    "own_branch": ("- Ты работаешь в своей ветке capricorn/{role} (отдельный git worktree): твои правки не видны "
+                   "другим и не попадут в основную ветку, пока менеджер не вольёт их. Если менеджер сообщает о "
+                   "конфликте — вызови sync_branch, исправь конфликтные файлы и вызови sync_branch снова."),
+    "peek": ("- Кодеры и тестировщик работают в своих ветках. Их работу смотри с параметром worktree: "
+             "git_diff(worktree=\"coder1\"), read_file(path, worktree=\"coder1\"), run_tests(worktree=\"coder1\")."),
+    "merge": ("- После APPROVED от ревьюера вливай работу в основную ветку: merge_work(agent=\"coder1\"). "
+              "При конфликте попроси этого агента выполнить sync_branch и снова отдать на ревью."),
 }
 NO_WRITE_HINT = ("Инструментов записи у тебя нет: каждый файл — в блоке кода с путём "
                  "в первой строке комментария.")
 
 
-def tools_section(role: str, tools: list[str]) -> str:
+def tools_section(role: str, tools: list[str], worktrees: bool = False) -> str:
     if not tools:
         base = "coder" if role.startswith("coder") else role
         return NO_WRITE_HINT if base in ("coder", "tester") else ""
@@ -85,11 +92,18 @@ def tools_section(role: str, tools: list[str]) -> str:
         lines.append(TOOL_HINTS["diff"])
     if "run_tests" in have:
         lines.append(TOOL_HINTS["tests"])
+    if worktrees:
+        if "sync_branch" in have:
+            lines.append(TOOL_HINTS["own_branch"].format(role=role))
+        else:
+            lines.append(TOOL_HINTS["peek"])
+        if "merge_work" in have:
+            lines.append(TOOL_HINTS["merge"])
     return "\n".join(lines)
 
 
 def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, extra: str = "",
-                  tools: list[str] | None = None) -> str:
+                  tools: list[str] | None = None, worktrees: bool = False) -> str:
     base_role = "coder" if role.startswith("coder") else role
     roster_txt = "\n".join(f"- @{r} — {ROLE_TITLES.get(r, r)}{' (это ты)' if r == role else ''}"
                            for r in roster)
@@ -99,7 +113,7 @@ def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, ex
         ROLE_PROMPTS[base_role],
         PROTOCOL.format(roster=roster_txt, language=lang),
     ]
-    section = tools_section(role, tools or [])
+    section = tools_section(role, tools or [], worktrees)
     if section:
         parts.append(section)
     if repo_ctx:

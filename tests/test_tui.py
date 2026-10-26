@@ -130,3 +130,43 @@ async def test_timers_survive_teardown(ui):
     await app.query_one(GitPanel).remove()
     app.update_status()
     await app.refresh_git().wait()
+
+
+@pytest.fixture
+async def ui_git(tmp_path, fast_mock):
+    from helpers import git, init_repo
+    repo = tmp_path / "gitrepo"
+    init_repo(repo)
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "init")
+    app = CapricornApp(load_config(force_mock=True), str(repo))
+    async with app.run_test(size=(180, 50)) as pilot:
+        yield app, pilot
+        app.orch.stop_all()
+        for t in app.orch._tasks:
+            t.cancel()
+
+
+async def test_worktrees_command(ui_git):
+    app, pilot = ui_git
+    await submit(pilot, "/worktrees")
+    await wait_for(pilot, lambda: any("ещё не создан" in t for t in feed_texts(app)))
+    out = [t for t in feed_texts(app) if "ещё не создан" in t][-1]
+    assert out.splitlines()[0].startswith("coder1") and "tester" in out and "reviewer" not in out
+    await submit(pilot, "/worktrees prune")
+    await wait_for(pilot, lambda: any("убирать нечего" in t for t in feed_texts(app)))
+
+
+async def test_worktrees_command_without_git(ui):
+    app, pilot = ui
+    await submit(pilot, "/worktrees")
+    await wait_for(pilot, lambda: any("worktree выключены" in t for t in feed_texts(app)))
+
+
+def test_help_markup_renders():
+    """Регрессия: «[prune]» в HELP Rich принял за стиль, и /help падал. Скобки со строчной буквой экранируй."""
+    from rich.text import Text
+    from capricorn.tui import HELP
+    plain = Text.from_markup(HELP).plain
+    assert "/worktrees [prune]" in plain and "/continue [N]" in plain

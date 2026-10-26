@@ -17,6 +17,7 @@ from typing import Awaitable, Callable
 
 from .config import Config
 from .gitinfo import run as git_run
+from .worktrees import Worktrees, is_writer
 
 READ_MAX_LINES = 2000
 READ_MAX_CHARS = 60_000
@@ -26,14 +27,16 @@ SEARCH_LIMIT = 100
 SEARCH_MAX_FILE = 1_000_000
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", "dist", "build"}
 
-WRITE_TOOLS = {"write_file", "edit_file"}
+WRITE_TOOLS = {"write_file", "edit_file", "sync_branch", "merge_work"}
+WORKTREE_TOOLS = {"sync_branch", "merge_work"}               # только когда включены worktree
+PEEK_TOOLS = {"list_files", "read_file", "search", "git_diff", "run_tests"}   # умеют смотреть чужой worktree
 READ_ONLY = ["list_files", "read_file", "search", "git_diff"]
 ROLE_TOOLS = {
     "architect": READ_ONLY,
-    "manager": ["list_files", "read_file", "git_diff"],
-    "coder": [*READ_ONLY, "write_file", "edit_file", "run_tests"],
+    "manager": ["list_files", "read_file", "git_diff", "merge_work"],
+    "coder": [*READ_ONLY, "write_file", "edit_file", "run_tests", "sync_branch"],
     "reviewer": [*READ_ONLY, "run_tests"],
-    "tester": [*READ_ONLY, "write_file", "edit_file", "run_tests"],
+    "tester": [*READ_ONLY, "write_file", "edit_file", "run_tests", "sync_branch"],
 }
 
 
@@ -70,51 +73,17 @@ def _clip(text: str, limit: int = OUTPUT_MAX_CHARS, tail: bool = False) -> str:
     return (f"… [обрезано {cut} символов]\n" + text[-limit:]) if tail else (text[:limit] + f"\n… [обрезано {cut} символов]")
 
 
-class Toolbox:
-    def __init__(self, root: str | Path, cfg: Config):
+class Workspace:
+    """Где работает инструмент: основной репозиторий или worktree агента."""
+
+    def __init__(self, root: str | Path, cfg: Config, *, agent: str = "", toolbox: "Toolbox | None" = None,
+                 base: str | None = None, label: str = ""):
         self.root = Path(root).resolve()
         self.cfg = cfg
-
-    # ------------------------------------------------------------ доступ
-    def allowed(self, agent: str) -> list[str]:
-        tc = self.cfg.tools
-        if not tc.enabled:
-            return []
-        ac = self.cfg.agents[agent]
-        base = "coder" if agent.startswith("coder") else agent
-        names = ac.tools if ac.tools is not None else ROLE_TOOLS.get(base, [])
-        out = []
-        for n in names:
-            if n not in TOOLS or n in out:
-                continue
-            if n in WRITE_TOOLS and not tc.write:
-                continue
-            if n == "run_tests" and not tc.run_tests:
-                continue
-            out.append(n)
-        return out
-
-    def specs_for(self, agent: str) -> list[dict]:
-        return [TOOLS[n].as_dict() for n in self.allowed(agent)]
-
-    async def run(self, agent: str, name: str, args) -> ToolResult:
-        try:
-            if name not in self.allowed(agent):
-                raise ToolError(f"инструмент «{name}» тебе недоступен. Есть: {', '.join(self.allowed(agent)) or 'нет'}")
-            if not isinstance(args, dict):
-                raise ToolError("аргументы должны быть JSON-объектом")
-            spec = TOOLS[name]
-            missing = [k for k in spec.parameters["required"] if k not in args]
-            if missing:
-                raise ToolError(f"не хватает аргументов: {', '.join(missing)}")
-            unknown = [k for k in args if k not in spec.parameters["properties"]]
-            if unknown:
-                raise ToolError(f"лишние аргументы: {', '.join(unknown)}")
-            return await spec.handler(self, args)
-        except ToolError as e:
-            return ToolResult(f"Ошибка: {e}", True, f"ошибка: {e}")
-        except Exception as e:  # noqa: BLE001 — модели нужен текст ошибки, а не падение хода
-            return ToolResult(f"Ошибка: {type(e).__name__}: {e}", True, f"ошибка: {type(e).__name__}")
+        self.agent = agent
+        self.toolbox = toolbox
+        self.base = base            # для worktree: от какого коммита считать diff работы агента
+        self.label = label          # «coder1» — чей это worktree (для сообщений)
 
     # ------------------------------------------------------------ пути
     def path(self, rel, *, must_exist: bool = True) -> Path:
@@ -163,6 +132,90 @@ class Toolbox:
                 continue
             out.append(f)
         return out
+
+
+class Toolbox(Workspace):
+    """Права агентов и диспетчер вызовов. Сам — рабочее пространство основного репозитория."""
+
+    def __init__(self, root: str | Path, cfg: Config):
+        super().__init__(root, cfg, toolbox=self)
+        self.worktrees = Worktrees(self.root, cfg)
+
+    # ------------------------------------------------------------ доступ
+    def allowed(self, agent: str) -> list[str]:
+        tc = self.cfg.tools
+        if not tc.enabled:
+            return []
+        ac = self.cfg.agents[agent]
+        base = "coder" if agent.startswith("coder") else agent
+        names = ac.tools if ac.tools is not None else ROLE_TOOLS.get(base, [])
+        out = []
+        for n in names:
+            if n not in TOOLS or n in out:
+                continue
+            if n in WRITE_TOOLS and not tc.write:
+                continue
+            if n == "run_tests" and not tc.run_tests:
+                continue
+            if n in WORKTREE_TOOLS and not self.worktrees.active:
+                continue
+            out.append(n)
+        return out
+
+    def writers(self) -> list[str]:
+        return [a for a in self.cfg.agents if is_writer(a) and (a != "coder3" or self.cfg.complex_mode)]
+
+    def peeks_worktrees(self, agent: str) -> bool:
+        """Может ли агент заглядывать в чужие worktree (параметр worktree)."""
+        return self.worktrees.active and not is_writer(agent)
+
+    def spec(self, agent: str, name: str) -> dict:
+        s = TOOLS[name].as_dict()
+        if name in PEEK_TOOLS and self.peeks_worktrees(agent):
+            params = dict(s["parameters"])
+            params["properties"] = {**params["properties"], "worktree": {
+                "type": "string", "enum": self.writers(),
+                "description": "чей worktree смотреть (по умолчанию — основная ветка)"}}
+            s["parameters"] = params
+        return s
+
+    def specs_for(self, agent: str) -> list[dict]:
+        return [self.spec(agent, n) for n in self.allowed(agent)]
+
+    async def workspace_for(self, agent: str, peek: str | None) -> Workspace:
+        if peek:
+            if peek not in self.writers():
+                raise ToolError(f"нет worktree «{peek}». Есть: {', '.join(self.writers())}")
+            if not await self.worktrees.exists(peek):
+                raise ToolError(f"{peek} ещё ничего не делал — его worktree не создан")
+            return Workspace(await self.worktrees.path(peek), self.cfg, agent=agent, toolbox=self,
+                             base=await self.worktrees.base(peek), label=peek)
+        if self.worktrees.active and is_writer(agent):
+            wt = await self.worktrees.ensure(agent)
+            return Workspace(wt, self.cfg, agent=agent, toolbox=self,
+                             base=await self.worktrees.base(agent), label=agent)
+        return Workspace(self.root, self.cfg, agent=agent, toolbox=self)
+
+    async def run(self, agent: str, name: str, args) -> ToolResult:
+        try:
+            if name not in self.allowed(agent):
+                raise ToolError(f"инструмент «{name}» тебе недоступен. Есть: {', '.join(self.allowed(agent)) or 'нет'}")
+            if not isinstance(args, dict):
+                raise ToolError("аргументы должны быть JSON-объектом")
+            params = self.spec(agent, name)["parameters"]
+            missing = [k for k in params["required"] if k not in args]
+            if missing:
+                raise ToolError(f"не хватает аргументов: {', '.join(missing)}")
+            unknown = [k for k in args if k not in params["properties"]]
+            if unknown:
+                raise ToolError(f"лишние аргументы: {', '.join(unknown)}")
+            args = dict(args)
+            ws = await self.workspace_for(agent, args.pop("worktree", None))
+            return await TOOLS[name].handler(ws, args)
+        except ToolError as e:
+            return ToolResult(f"Ошибка: {e}", True, f"ошибка: {e}")
+        except Exception as e:  # noqa: BLE001 — модели нужен текст ошибки, а не падение хода
+            return ToolResult(f"Ошибка: {type(e).__name__}: {e}", True, f"ошибка: {type(e).__name__}")
 
 
 # ------------------------------------------------------------------ handlers
@@ -261,7 +314,9 @@ async def _git_diff(tb: Toolbox, a: dict) -> ToolResult:
     if code != 0:
         raise ToolError("это не git-репозиторий")
     args = ["git", "diff", "--no-color"]
-    if a.get("staged"):
+    if tb.base:                                   # worktree агента: вся его работа от точки ответвления
+        args.append(tb.base)
+    elif a.get("staged"):
         args.append("--cached")
     if a.get("path"):
         args += ["--", tb.rel(tb.path(a["path"], must_exist=False))]
@@ -269,7 +324,9 @@ async def _git_diff(tb: Toolbox, a: dict) -> ToolResult:
     if code != 0:
         raise ToolError(diff[:500])
     parts = [diff or "(изменений в отслеживаемых файлах нет)"]
-    if not a.get("staged"):
+    if tb.label:
+        parts.insert(0, f"Работа {tb.label} относительно основной ветки:")
+    if tb.base or not a.get("staged"):
         _, untracked = await git_run("git", "ls-files", "--others", "--exclude-standard", cwd=str(tb.root))
         names = [u for u in untracked.splitlines() if u]
         if a.get("path"):
@@ -279,6 +336,23 @@ async def _git_diff(tb: Toolbox, a: dict) -> ToolResult:
             parts.append("Новые неотслеживаемые файлы (содержимое — через read_file):\n" + "\n".join(names))
     changed = diff.count("\ndiff --git") + diff.startswith("diff --git")
     return ToolResult(_clip("\n\n".join(parts)), summary=f"{changed} файлов в diff")
+
+
+async def _sync_branch(ws: Workspace, a: dict) -> ToolResult:
+    res = await ws.toolbox.worktrees.sync(ws.agent)
+    if not res.ok:
+        raise ToolError(res.text)
+    return ToolResult(res.text, summary=res.text)
+
+
+async def _merge_work(ws: Workspace, a: dict) -> ToolResult:
+    target = a["agent"]
+    if target not in ws.toolbox.writers():
+        raise ToolError(f"нет такой ветки. Можно: {', '.join(ws.toolbox.writers())}")
+    res = await ws.toolbox.worktrees.merge(target)
+    if not res.ok:
+        raise ToolError(res.text)
+    return ToolResult(res.text, summary=res.text)
 
 
 def _decode_output(raw: bytes) -> str:
@@ -353,4 +427,10 @@ TOOLS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("run_tests", "Запустить тесты проекта (команда задана в конфиге).", _schema({
         "target": {"type": "string", "description": "файл или каталог с тестами, необязательно"},
     }, []), _run_tests),
+    ToolSpec("sync_branch", "Подтянуть основную ветку в свою. При конфликтах — исправь файлы и вызови снова.",
+             _schema({}, []), _sync_branch),
+    ToolSpec("merge_work", "Влить работу агента (его ветку capricorn/<агент>) в основную ветку. "
+                           "Вызывай после APPROVED от ревьюера.", _schema({
+        "agent": {"type": "string", "description": "чью работу вливать: coder1, coder2, coder3, tester"},
+    }, ["agent"]), _merge_work),
 ]}

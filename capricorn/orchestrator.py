@@ -123,7 +123,8 @@ class Agent:
             tools = self.orch.toolbox.specs_for(self.name)
             system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
                                    await self.orch.repo_context(), self.cfg.extra_prompt,
-                                   tools=[t["name"] for t in tools])
+                                   tools=[t["name"] for t in tools],
+                                   worktrees=self.orch.toolbox.worktrees.active)
             rounds = 0
             while True:
                 last_round = rounds >= self.orch.cfg.tools.max_rounds
