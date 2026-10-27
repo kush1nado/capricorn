@@ -131,3 +131,24 @@ def init_repo(path) -> None:
     git(path, "config", "user.email", "test@example.com")
     git(path, "config", "commit.gpgsign", "false")
     git(path, "config", "core.autocrlf", "false")
+
+
+def conflicted_repo(path):
+    """main и other по-разному меняют calc.py; merge other в main останавливается на конфликте."""
+    init_repo(path)
+    (path / "calc.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    (path / "gone.txt").write_text("x\n", encoding="utf-8")
+    git(path, "add", ".")
+    git(path, "commit", "-qm", "base")
+    git(path, "switch", "-qc", "other")
+    (path / "calc.py").write_text("a = 1\nb = 20\nc = 3\n", encoding="utf-8")
+    (path / "gone.txt").write_text("changed\n", encoding="utf-8")
+    git(path, "commit", "-qam", "other")
+    git(path, "switch", "-q", "main")
+    (path / "calc.py").write_text("a = 1\nb = 200\nc = 3\n", encoding="utf-8")
+    git(path, "rm", "-q", "gone.txt")
+    git(path, "commit", "-qam", "main")
+    import subprocess
+    r = subprocess.run(["git", "merge", "other"], cwd=path, capture_output=True, stdin=subprocess.DEVNULL)
+    assert r.returncode != 0
+    return path

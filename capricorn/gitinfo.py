@@ -266,6 +266,59 @@ class GitWatcher:
     async def fetch(self) -> tuple[bool, str]:
         return await self._git("fetch", "--prune", timeout=180, env=NO_PROMPT)
 
+    # ------------------------------------------------- конфликты
+    STATES = (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
+              ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"))
+
+    async def merge_state(self) -> str:
+        """Какая операция прервана конфликтом: merge, rebase, cherry-pick, revert — или пусто."""
+        for name, state in self.STATES:
+            code, path = await run("git", "rev-parse", "--git-path", name, cwd=self.repo)
+            if code == 0 and path and os.path.exists(os.path.join(self.repo, path)):
+                return state
+        return ""
+
+    async def take_side(self, path: str, side: str) -> tuple[bool, str]:
+        """Весь файл целиком из нашей (ours) или их (theirs) версии — и в индекс."""
+        if side not in ("ours", "theirs"):
+            return False, f"неизвестная сторона: {side}"
+        ok, out = await self._git("checkout", f"--{side}", "--", path)
+        if not ok:                  # в этой версии файл удалён — значит, принимаем удаление
+            if "does not have" in out:
+                return await self._git("rm", "-q", "--", path)
+            return ok, out
+        return await self._git("add", "--", path)
+
+    def read_text(self, path: str) -> str:
+        """Текст файла как есть (с CRLF, если он там был). UnicodeDecodeError — файл не текстовый."""
+        with open(os.path.join(self.repo, path), encoding="utf-8", newline="") as f:
+            return f.read()
+
+    async def save_resolved(self, path: str, text: str) -> tuple[bool, str]:
+        try:
+            with open(os.path.join(self.repo, path), "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        except OSError as e:
+            return False, str(e)
+        return await self._git("add", "--", path)
+
+    async def continue_op(self) -> tuple[bool, str]:
+        state = await self.merge_state()
+        if not state:
+            return False, "нет прерванной операции"
+        left = [c.path for c in await self.changes() if c.conflict]
+        if left:
+            return False, "сначала разреши конфликты: " + ", ".join(left)
+        # редактор сообщения коммита не открываем — берём сообщение git по умолчанию
+        return await self._git("-c", "core.editor=true", state, "--continue", timeout=600,
+                               env={"GIT_EDITOR": "true"})
+
+    async def abort_op(self) -> tuple[bool, str]:
+        state = await self.merge_state()
+        if not state:
+            return False, "нет прерванной операции"
+        return await self._git(state, "--abort")
+
     async def switch(self, branch: str) -> tuple[bool, str]:
         code, out = await run("git", "switch", branch, cwd=self.repo)
         return code == 0, out

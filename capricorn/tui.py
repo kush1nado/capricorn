@@ -18,6 +18,7 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import Button, DirectoryTree, Input, Label, OptionList, RadioButton, RadioSet, Select, Static
 
+from . import conflicts as cx
 from . import start
 from .config import Config, load_config
 from .gitinfo import GitSnapshot
@@ -66,7 +67,7 @@ HELP = """\
 [b]Клавиши[/b] (все через alt):
   alt+1..9, alt+стрелки — выбрать панель     alt+space (или alt+o) — открыть её окно
   в окне агента — личный разговор; esc закрывает окно, итог уходит команде
-  alt+g — полноэкранный Git (ветки, коммиты)   alt+z — развернуть панель, esc — свернуть
+  alt+g — полноэкранный Git (ветки, коммиты, конфликты)   alt+z — развернуть панель, esc — свернуть
   alt+p пауза · alt+s стоп · alt+b ветки · alt+w worktree · alt+n новая сессия · alt+e экспорт · alt+h справка
   (F5/F8/ctrl+b тоже работают; если терминал перехватывает alt+space — жми alt+o)"""
 
@@ -629,6 +630,212 @@ class ConfirmModal(ModalScreen[bool]):
             yield Static("y — да · n / esc — нет", classes="hint")
 
 
+def lines_text(lines: list[str], style: str) -> Text:
+    return Text("".join(lines).replace("\r\n", "\n"), style=style) if lines else Text("(пусто)", style=STEEL)
+
+
+class ConflictScreen(ModalScreen[bool]):
+    """Конфликты одного файла по блокам: наше, их, оба или вариант агента. Возвращает True, если файл решён."""
+    BINDINGS = [
+        Binding("escape", "close", "Закрыть"),
+        Binding("alt+space", "close", show=False, priority=True),
+        Binding("alt+g", "close", show=False, priority=True),
+        Binding("alt+o", "close", show=False, priority=True),
+        Binding("left,h", f"pick('{cx.OURS}')", show=False),
+        Binding("right,l", f"pick('{cx.THEIRS}')", show=False),
+        Binding("b", f"pick('{cx.BOTH}')", show=False),
+        Binding("enter", f"pick('{cx.AGENT}')", show=False),
+        Binding("u", "pick('')", show=False),
+        Binding("up,k", "go(-1)", show=False),
+        Binding("down,j", "go(1)", show=False),
+        Binding("alt+r", "ask", show=False, priority=True),
+        Binding("R", "ask_all", show=False),
+        Binding("w", "next_agent", show=False),
+        Binding("o", "whole('ours')", show=False),
+        Binding("t", "whole('theirs')", show=False),
+        Binding("s", "save", show=False),
+    ]
+    DEFAULT_CSS = """
+    ConflictScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
+    ConflictScreen > Vertical { width: 96%; height: 94%; border: heavy #ff1a3c; background: #08080a; }
+    ConflictScreen #cx-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    ConflictScreen #cx-keys { height: auto; background: #140205; color: #a8a29a; padding: 0 1; }
+    ConflictScreen .ctx { height: auto; color: #6e7681; padding: 0 1; }
+    ConflictScreen .side { width: 1fr; border: solid #5c0a16; padding: 0 1;
+                           border-title-color: #ff1a3c; border-title-style: bold; }
+    ConflictScreen .side.chosen { border: heavy #39ff14; border-title-color: #39ff14; }
+    ConflictScreen #cx-msg { height: 1; padding: 0 1; }
+    """
+    AGENTS = ("architect", "coder1", "reviewer", "coder2", "manager", "tester", "coder3")
+
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = path
+        self.cf: cx.ConflictFile | None = None
+        self.index = 0
+        self.asking: set[int] = set()           # блоки, по которым ждём ответ агента
+        self.agent = ""
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("▓ КОНФЛИКТ", id="cx-title")
+            yield Static("", id="cx-before", classes="ctx")
+            with Horizontal():
+                for key in ("ours", "theirs", "result"):
+                    pane = VerticalScroll(Static("", id=f"cx-{key}-body"), id=f"cx-{key}", classes="side")
+                    pane.can_focus = False      # стрелки — навигация по блокам, а не прокрутка
+                    yield pane
+            yield Static("", id="cx-after", classes="ctx")
+            yield Static("", id="cx-msg")
+            yield Static("← наше · → их · b оба · alt+r спросить агента · R агента по всем · enter принять вариант "
+                         "агента · w другой агент · u сбросить · ↑↓ блоки · o/t файл целиком · s сохранить · esc",
+                         id="cx-keys")
+
+    def on_mount(self):
+        names = [a for a in self.AGENTS if a in self.app.orch.agents] or list(self.app.orch.agents)
+        self.agent = names[0] if names else ""
+        try:
+            self.cf = cx.parse(self.git.read_text(self.path))
+        except (OSError, UnicodeDecodeError, cx.ConflictParseError) as e:
+            self.cf = None
+            self.message(f"по блокам не разобрать ({e.__class__.__name__}) — o/t: взять файл целиком", ok=False)
+        if self.cf is not None and not self.cf.hunks:
+            self.cf = None
+            self.message("маркеров конфликта нет — o/t: взять файл целиком", ok=False)
+        self.render_hunk()
+
+    @property
+    def git(self):
+        return self.app.orch.git
+
+    @property
+    def hunk(self) -> cx.Hunk | None:
+        return self.cf.hunks[self.index] if self.cf and self.cf.hunks else None
+
+    def message(self, text: str, ok: bool = True):
+        self.query_one("#cx-msg", Static).update(Text(text, style=GREEN if ok else f"bold {RED}"))
+
+    def render_hunk(self):
+        h = self.hunk
+        total = len(self.cf.hunks) if self.cf else 0
+        left = self.cf.unresolved if self.cf else 0
+        self.query_one("#cx-title", Static).update(
+            f"▓ КОНФЛИКТ ┃ {self.path} ┃ блок {self.index + 1 if h else 0}/{total} ┃ осталось {left} ┃ агент: {self.agent}")
+        if h is None:
+            for key in ("ours", "theirs", "result"):
+                self.query_one(f"#cx-{key}-body", Static).update("")
+            return
+        before, after = self.cf.context(h)
+        self.query_one("#cx-before", Static).update(lines_text(before, STEEL) if before else "")
+        self.query_one("#cx-after", Static).update(lines_text(after, STEEL) if after else "")
+        self.query_one("#cx-ours").border_title = f"НАШЕ · {h.ours_label or 'ours'}"
+        self.query_one("#cx-theirs").border_title = f"ИХ · {h.theirs_label or 'theirs'}"
+        self.query_one("#cx-ours-body", Static).update(lines_text(h.ours, GREEN))
+        self.query_one("#cx-theirs-body", Static).update(lines_text(h.theirs, CYAN))
+        result = self.query_one("#cx-result")
+        if h.resolved:
+            result.border_title = {cx.OURS: "ИТОГ · наше", cx.THEIRS: "ИТОГ · их", cx.BOTH: "ИТОГ · оба",
+                                   cx.AGENT: "ИТОГ · вариант агента"}[h.choice]
+            body = lines_text(h.result(), BONE)
+        elif h.proposal is not None:
+            result.border_title = "ВАРИАНТ АГЕНТА · enter — принять"
+            body = lines_text(h.proposal, CYAN)
+        elif self.index in self.asking:
+            result.border_title = "ВАРИАНТ АГЕНТА"
+            body = Text(f"{self.agent} думает…", style=STEEL)
+        else:
+            result.border_title = "ИТОГ"
+            body = Text("не выбрано: ← наше · → их · b оба · alt+r агент", style=STEEL)
+        self.query_one("#cx-result-body", Static).update(body)
+        for key, sides in (("ours", (cx.OURS, cx.BOTH)), ("theirs", (cx.THEIRS, cx.BOTH)), ("result", (cx.AGENT,))):
+            self.query_one(f"#cx-{key}").set_class(h.choice in sides, "chosen")
+
+    # ------------------------------------------------------------ действия
+    def action_go(self, step: int):
+        if self.cf and self.cf.hunks:
+            self.index = (self.index + step) % len(self.cf.hunks)
+            self.render_hunk()
+
+    def action_pick(self, side: str):
+        h = self.hunk
+        if h is None:
+            return
+        if side == cx.AGENT and h.proposal is None:
+            self.message("варианта агента ещё нет — alt+r", ok=False)
+            return
+        h.choice = side or None
+        if h.choice and self.cf.unresolved:
+            hunks = self.cf.hunks
+            self.index = next(i % len(hunks) for i in range(self.index + 1, self.index + 1 + len(hunks))
+                              if not hunks[i % len(hunks)].resolved)
+        elif h.choice:
+            self.message("все блоки решены — s сохранить")
+        self.render_hunk()
+
+    def action_next_agent(self):
+        names = [a for a in self.AGENTS if a in self.app.orch.agents]
+        if names:
+            self.agent = names[(names.index(self.agent) + 1) % len(names)] if self.agent in names else names[0]
+            self.render_hunk()
+
+    def action_ask(self):
+        if self.hunk is not None and self.agent:
+            self.ask(self.index)
+
+    def action_ask_all(self):
+        if self.cf and self.agent:
+            for i, h in enumerate(self.cf.hunks):
+                if not h.resolved and h.proposal is None:
+                    self.ask(i)
+
+    @work(group="cx-agent")
+    async def ask(self, index: int):
+        if index in self.asking:
+            return
+        h, agent = self.cf.hunks[index], self.agent
+        self.asking.add(index)
+        self.render_hunk()
+        try:
+            answer = await self.app.orch.ask_once(agent, cx.RESOLVER_SYSTEM, cx.agent_prompt(self.path, self.cf, h))
+        except Exception as e:                       # noqa: BLE001 — ошибка провайдера показывается, окно живёт
+            self.message(f"{agent}: {e}", ok=False)
+            return
+        finally:
+            self.asking.discard(index)
+        h.proposal = cx.proposal_lines(answer, h.ours + h.theirs) if answer.strip() else None
+        if h.proposal is None:
+            self.message(f"{agent} ничего не предложил", ok=False)
+        elif index == self.index:
+            self.message(f"{agent} предложил вариант — enter принять")
+        self.render_hunk()
+
+    def action_save(self):
+        if self.cf is None:
+            self.message("по блокам не разобрать — o/t: взять файл целиком", ok=False)
+        elif self.cf.unresolved:
+            self.message(f"не решено блоков: {self.cf.unresolved}", ok=False)
+        else:
+            self.finish(self.git.save_resolved, self.path, self.cf.render())
+
+    def action_whole(self, side: str):
+        self.finish(self.git.take_side, self.path, side)
+
+    @work(group="cx-op")
+    async def finish(self, op, *args):
+        ok, out = await op(*args)
+        if ok:
+            self.dismiss(True)
+        else:
+            self.message(git_message(out, ok), ok=False)
+
+    def action_close(self):
+        if self.cf and any(h.choice for h in self.cf.hunks):
+            self.app.push_screen(ConfirmModal("выйти без сохранения?\nвыбранное в этом файле потеряется"),
+                                 lambda yes: yes and self.dismiss(False))
+        else:
+            self.dismiss(False)
+
+
 class GitScreen(ModalScreen[None]):
     """Полноэкранный Git в духе lazygit: файлы (индекс, откат, коммит), ветки, коммиты, push/pull."""
     BINDINGS = [
@@ -645,6 +852,10 @@ class GitScreen(ModalScreen[None]):
         Binding("P", "remote('push')", show=False),
         Binding("f", "remote('fetch')", show=False),
         Binding("r", "refresh", show=False),
+        Binding("o", "take_side('ours')", show=False),
+        Binding("t", "take_side('theirs')", show=False),
+        Binding("m", "continue_op", show=False),
+        Binding("A", "abort_op", show=False),
     ]
     DEFAULT_CSS = """
     GitScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
@@ -660,6 +871,8 @@ class GitScreen(ModalScreen[None]):
     GitScreen #commits { height: 1fr; }
     GitScreen #git-view { border: solid #3d0710; padding: 0 1; }
     GitScreen #git-msg { height: 1; padding: 0 1; }
+    GitScreen #git-state { height: auto; display: none; background: #2a0510; color: #ff1a3c; text-style: bold; padding: 0 1; }
+    GitScreen #git-state.on { display: block; }
     """
 
     def __init__(self):
@@ -669,10 +882,12 @@ class GitScreen(ModalScreen[None]):
         self.commits: list[tuple[str, str, str, str]] = []
         self.shown = ""                 # текст справа (diff файла или коммита)
         self.current_branch = ""
+        self.state = ""                 # merge / rebase / cherry-pick / revert, прерванные конфликтом
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("▓ GIT", id="git-title")
+            yield Static("", id="git-state")
             with Horizontal():
                 with Vertical(id="git-left"):
                     yield Label("ФАЙЛЫ", classes="caption")
@@ -685,7 +900,7 @@ class GitScreen(ModalScreen[None]):
                     yield Static("", id="commit-view")
             yield Static("", id="git-msg")
             yield Static("пробел индекс · a всё · d откатить · c коммит · n ветка · p pull · P push · f fetch · "
-                         "r обновить · tab — списки · esc", id="git-keys")
+                         "r обновить · enter конфликт · m/A merge · tab — списки · esc", id="git-keys")
 
     def on_mount(self):
         self.reload()
@@ -708,7 +923,10 @@ class GitScreen(ModalScreen[None]):
         self.current_branch = snap.branch
         track = f" → {snap.upstream} ↑{snap.ahead} ↓{snap.behind}" if snap.upstream else ""
         self.query_one("#git-title", Static).update(f"▓ GIT ┃ {snap.branch}{track}")
-        self.files = await self.git.changes()
+        files = await self.git.changes()
+        self.state = await self.git.merge_state()
+        self.files = files                  # вместе с баннером: между ними нет await
+        self.show_state()
         self.branches = snap.branches
         self.commits = await self.git.commits()
         fl = self.query_one("#files", OptionList)
@@ -729,6 +947,17 @@ class GitScreen(ModalScreen[None]):
         elif self.commits:
             self.show_commit(self.commits[0][0])
 
+    def show_state(self):
+        banner = self.query_one("#git-state", Static)
+        banner.set_class(bool(self.state), "on")
+        if not self.state:
+            return
+        n = sum(c.conflict for c in self.files)
+        left = (f"в конфликте: {n} ┃ enter — разрешить по блокам · o/t — файл целиком наш/их · "
+                if n else "конфликты решены ┃ m — завершить · ")
+        swap = " (при rebase «наше» — ветка, на которую переносишь)" if self.state == "rebase" else ""
+        banner.update(f"▲ {self.state.upper()} ┃ {left}A — прервать{swap}")
+
     @work(exclusive=True, group="git-show")
     async def show_commit(self, sha: str):
         self.show(await self.git.show(sha))
@@ -746,6 +975,17 @@ class GitScreen(ModalScreen[None]):
     def preview_change(self, ev: OptionList.OptionHighlighted):
         if 0 <= ev.option_index < len(self.files):
             self.preview_file(self.files[ev.option_index])
+
+    @on(OptionList.OptionSelected, "#files")
+    def resolve(self, ev: OptionList.OptionSelected):
+        if 0 <= ev.option_index < len(self.files) and self.files[ev.option_index].conflict:
+            self.app.push_screen(ConflictScreen(self.files[ev.option_index].path), self.resolved)
+
+    def resolved(self, done: bool | None):
+        if done:
+            self.message("файл решён и добавлен в индекс")
+        self.reload()
+        self.app.refresh_git()
 
     @on(OptionList.OptionSelected, "#branches")
     def switch(self, ev: OptionList.OptionSelected):
@@ -800,6 +1040,28 @@ class GitScreen(ModalScreen[None]):
 
     def action_refresh(self):
         self.reload()
+
+    def action_take_side(self, side: str):
+        c = self.selected_change()
+        if c is None or not c.conflict:
+            self.message("o/t — для файла в конфликте", ok=False)
+            return
+        self.run_git(self.git.take_side, c.path, side)
+
+    def action_continue_op(self):
+        if not self.state:
+            self.message("нет прерванного merge/rebase", ok=False)
+            return
+        self.message(f"{self.state} --continue…")
+        self.run_git(self.git.continue_op)
+
+    def action_abort_op(self):
+        if not self.state:
+            self.message("нет прерванного merge/rebase", ok=False)
+            return
+        self.app.push_screen(ConfirmModal(f"прервать {self.state}?\nрешённые конфликты пропадут, "
+                                          "ветка вернётся как была"),
+                             lambda yes: yes and self.run_git(self.git.abort_op))
 
     def action_close(self):
         self.dismiss(None)

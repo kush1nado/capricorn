@@ -520,3 +520,100 @@ def test_git_message_drops_warnings_and_hints():
     assert git_message(out + "error: failed to push some refs\n", ok=False) == "error: failed to push some refs"
     assert git_message("[main 1a2b3c] коммит\n 1 file changed", ok=True) == " 1 file changed"
     assert git_message("", ok=False) == "ошибка"
+
+
+# ------------------------------------------------------- конфликты в Git-окне
+
+@pytest.fixture
+async def ui_conflict(tmp_path, fast_mock):
+    from helpers import conflicted_repo
+    repo = conflicted_repo(tmp_path / "conflict")
+    app = CapricornApp(load_config(force_mock=True), str(repo))
+    async with app.run_test(size=(180, 50)) as pilot:
+        yield app, pilot, repo
+        app.orch.stop_all()
+        for t in app.orch._tasks:
+            t.cancel()
+
+
+async def open_conflict(app, pilot):
+    from capricorn.tui import ConflictScreen
+    scr = await open_git(app, pilot)
+    await wait_for(pilot, lambda: scr.state == "merge" and len(scr.files) == 2)
+    assert "MERGE" in str(scr.query_one("#git-state").content)
+    await pilot.press("enter")                                       # calc.py — первый в списке
+    await wait_for(pilot, lambda: isinstance(app.screen, ConflictScreen))
+    return scr, app.screen
+
+
+async def test_conflict_blocks_whole_file_and_continue(ui_conflict):
+    app, pilot, repo = ui_conflict
+    from helpers import git
+    git_scr, cx_scr = await open_conflict(app, pilot)
+    assert cx_scr.cf.unresolved == 1 and "b = 200" in str(cx_scr.query_one("#cx-ours-body").content)
+    await pilot.press("s")                                           # не всё решено — не сохраняем
+    assert app.screen is cx_scr and "не решено" in str(cx_scr.query_one("#cx-msg").content)
+    await pilot.press("right")
+    assert cx_scr.cf.unresolved == 0 and cx_scr.query_one("#cx-theirs").has_class("chosen")
+    await pilot.press("s")
+    await wait_for(pilot, lambda: app.screen is git_scr)
+    assert (repo / "calc.py").read_text(encoding="utf-8") == "a = 1\nb = 20\nc = 3\n"
+    await wait_for(pilot, lambda: [c.path for c in git_scr.files if c.conflict] == ["gone.txt"])
+
+    git_scr.query_one("#files").highlighted = [c.path for c in git_scr.files].index("gone.txt")
+    await pilot.press("o")                                           # у нас файл удалён — принимаем удаление
+    await wait_for(pilot, lambda: not any(c.conflict for c in git_scr.files))
+    assert "m — завершить" in str(git_scr.query_one("#git-state").content)
+    await pilot.press("m")
+    await wait_for(pilot, lambda: git_scr.state == "")
+    assert not git_scr.query_one("#git-state").has_class("on")
+    assert git(repo, "log", "-1", "--format=%p").count(" ") == 1
+
+
+async def test_conflict_agent_proposal(ui_conflict):
+    app, pilot, repo = ui_conflict
+    asked = []
+
+    async def fake_ask(agent, system, prompt):
+        asked.append((agent, prompt))
+        return "```\nb = 220\n```\nсложил оба"
+    app.orch.ask_once = fake_ask
+    _, cx_scr = await open_conflict(app, pilot)
+    await pilot.press("enter")                                       # варианта ещё нет
+    assert "alt+r" in str(cx_scr.query_one("#cx-msg").content) and cx_scr.cf.unresolved == 1
+    await pilot.press("w")
+    assert cx_scr.agent == "coder1"
+    await pilot.press("alt+r")
+    await wait_for(pilot, lambda: cx_scr.hunk.proposal is not None)
+    assert asked[0][0] == "coder1" and "calc.py" in asked[0][1]
+    assert "b = 220" in str(cx_scr.query_one("#cx-result-body").content)
+    await pilot.press("enter", "s")
+    await wait_for(pilot, lambda: (repo / "calc.py").read_text(encoding="utf-8") == "a = 1\nb = 220\nc = 3\n")
+
+
+async def test_conflict_agent_error_keeps_window(ui_conflict):
+    app, pilot, _ = ui_conflict
+
+    async def broken(agent, system, prompt):
+        raise RuntimeError("нет сети")
+    app.orch.ask_once = broken
+    _, cx_scr = await open_conflict(app, pilot)
+    await pilot.press("alt+r")
+    await wait_for(pilot, lambda: "нет сети" in str(cx_scr.query_one("#cx-msg").content))
+    assert app.screen is cx_scr and not cx_scr.asking
+
+
+async def test_conflict_escape_confirms_and_abort(ui_conflict):
+    from capricorn.tui import ConfirmModal
+    app, pilot, repo = ui_conflict
+    git_scr, cx_scr = await open_conflict(app, pilot)
+    await pilot.press("left", "escape")                              # выбор сделан — спрашиваем
+    assert isinstance(app.screen, ConfirmModal)
+    await pilot.press("y")
+    await wait_for(pilot, lambda: app.screen is git_scr)
+    assert "<<<<<<<" in (repo / "calc.py").read_text(encoding="utf-8"), "без сохранения файл не тронут"
+    await pilot.press("A")
+    assert isinstance(app.screen, ConfirmModal)
+    await pilot.press("y")
+    await wait_for(pilot, lambda: git_scr.state == "" and not git_scr.files)
+    assert (repo / "calc.py").read_text(encoding="utf-8") == "a = 1\nb = 200\nc = 3\n"

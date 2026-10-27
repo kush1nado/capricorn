@@ -534,6 +534,31 @@ class Orchestrator:
                 "branch": wts.branch(agent) if ws.label else "",
                 "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
 
+    async def ask_once(self, agent: str, system: str, prompt: str) -> str:
+        """Разовый вопрос агенту вне диалога команды: его история и CLI-сессия не трогаются,
+        токены идут в его счётчик. CLI-агент работает только на чтение."""
+        provider = self.provider_for(agent)
+        a, cfg = self.agents[agent], self.cfg.agents[agent]
+        key = f"{agent}#once"                   # отдельная сессия у CLI-провайдера
+        extra = ({"workspace": {"path": str(self.repo), "write": False, "shell": False, "test_command": ""}}
+                 if getattr(provider, "native_tools", False) else {})
+        text = ""
+        try:
+            async for chunk in provider.stream(model=cfg.model_id, system=system,
+                                               messages=[{"role": "user", "content": prompt}],
+                                               temperature=cfg.temperature, max_tokens=cfg.max_tokens,
+                                               agent=key, **extra):
+                if isinstance(chunk, str):
+                    text += chunk
+                else:
+                    u = chunk.get("usage") or {}
+                    a.tokens_in += u.get("in", 0)
+                    a.tokens_out += u.get("out", 0)
+                    a.tokens_cached += u.get("cached", 0)
+        finally:
+            provider.reset(key)
+        return text
+
     def notify(self, agent: str, text: str, sender: str = "git"):
         """Служебное сообщение агенту (результат слияния и т.п.) — оно же будит его на ход."""
         msg = Message(id=next(self.ids), sender=sender, to=[agent], content=text)
