@@ -28,7 +28,7 @@ jobs:
   build:
     name: build · ${{ matrix.os }}
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -46,11 +46,37 @@ jobs:
       - name: Build and smoke-test
         run: python scripts/build.py
       - name: Pack
-        # tar сохраняет права на исполнение и симлинки (важно для .app), upload-artifact сам их теряет
+        # tar сохраняет права на исполнение и симлинки (важно для .app), upload-artifact сам их теряет.
+        # Windows — zip: его открывает проводник без сторонних программ.
         shell: bash
-        run: tar -czf "Capricorn-${{ runner.os }}.tar.gz" -C dist .
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            (cd dist && 7z a -tzip "../Capricorn-$RUNNER_OS.zip" . > /dev/null)
+          else
+            tar -czf "Capricorn-$RUNNER_OS.tar.gz" -C dist .
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: Capricorn-${{ runner.os }}
-          path: Capricorn-${{ runner.os }}.tar.gz
+          path: Capricorn-${{ runner.os }}.*
           retention-days: 14
+
+  release:
+    name: release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches version
+        run: python scripts/version.py check-tag "$GITHUB_REF_NAME"
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --title "Capricorn $GITHUB_REF_NAME" --generate-notes

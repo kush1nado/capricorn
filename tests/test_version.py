@@ -88,3 +88,15 @@ def test_bump_keeps_line_endings(tmp_path, monkeypatch, eol):
     monkeypatch.setattr(version, "INIT", init)
     version.main(["bump"])
     assert init.read_bytes() == b'"""doc"""' + eol + b'__version__ = "0.1.1"' + eol
+
+
+@pytest.mark.parametrize("tag,code", [("v0.9.9", 0), ("0.9.9", 1), ("v0.9.8", 1), ("v0.9.9-rc", 1)])
+def test_check_tag_matches_package_version(tmp_path, monkeypatch, tag, code):
+    init = tmp_path / "__init__.py"
+    init.write_text('__version__ = "0.9.9"\n', encoding="utf-8")
+    monkeypatch.setattr(version, "INIT", init)
+    assert version.main(["check-tag", tag]) == code
+
+
+def test_check_tag_requires_argument():
+    assert version.main(["check-tag"]) == 2

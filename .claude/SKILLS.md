@@ -156,6 +156,10 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   `docker run --rm -v "<repo>:/src:ro" python:3.10-slim sh -c '...'`. Копируй `/src` в контейнер без `.venv` и `.git`,
   установи `git` и `pip install -e ".[dev]"`, затем запусти pytest.
 - Результат CI после push: `gh run list --limit 6`, разовая проверка без циклического опроса.
+- **Релиз.** Тег `vX.Y.Z` запускает job `release`: `version.py check-tag` сверяет тег с `capricorn/__init__.py`,
+  затем `gh release create` выкладывает архивы build-job. Порядок: bump (minor/major — решение владельца) → коммит →
+  push main → `git tag vX.Y.Z` → `git push origin vX.Y.Z`. Тег на коммит, который ещё не в main, не ставь.
+  Windows пакуется в zip (7z есть на раннере), macOS/Linux в tar.gz (сохраняет права и симлинки `.app`).
 
 ## Ловушки окружения (Windows)
 

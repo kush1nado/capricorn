@@ -77,6 +77,11 @@ capricorn --complex              # сразу с третьим кодером
 
 ### Готовое приложение (без Python)
 
+Скачай архив для своей ОС на странице [Releases](https://github.com/kush1nado/capricorn/releases):
+`Capricorn-Windows.zip`, `Capricorn-macOS.tar.gz` или `Capricorn-Linux.tar.gz`. Распакуй и запусти.
+
+Собрать самому:
+
 ```bash
 pip install -e ".[desktop,build]"
 python scripts/build.py          # → dist/Capricorn/
@@ -95,6 +100,9 @@ python scripts/build.py          # → dist/Capricorn/
 CI собирает приложение на всех трёх ОС при каждом push в `main` — архивы лежат в артефактах прогона
 (вкладка Actions → прогон → Artifacts). Сборка для macOS не подписана: при первом запуске —
 правый клик → «Открыть» (или `xattr -dr com.apple.quarantine Capricorn.app`).
+
+Релиз: `python scripts/version.py bump minor`, коммит, затем `git tag v0.2.0 && git push origin v0.2.0`.
+CI проверит, что тег совпадает с версией, соберёт три ОС и опубликует GitHub Release с архивами.
 
 Двойной клик по приложению открывает стартовый экран: выбери папку проекта и модели. Сразу в проект —
 `Capricorn.exe --repo D:\work\project`.
@@ -260,5 +268,6 @@ git config core.hooksPath .githooks             # pre-commit: версия + т�
 1. ~~Инструменты агентов~~ — готово (v0.1.5).
 2. ~~Отдельный git worktree на каждого кодера~~ — готово (v0.1.9).
 3. ~~Учёт стоимости~~ — при работе через подписки (Codex CLI, Claude Code CLI) не нужен; бюджет ходов остаётся.
-4. Сохранение/загрузка сессии, экспорт спора в Markdown.
-5. Голосование при споре (architect vs reviewer → решает manager или ты).
+4. ~~Сохранение/загрузка сессии, экспорт спора в Markdown~~ — готово (v0.1.14).
+5. ~~Голосование~~ — не нужно: при споре manager спрашивает тебя с вариантами A/B.
+6. ~~Релизы со сборками для трёх ОС~~ — готово (v0.2.0).

@@ -3,6 +3,7 @@
     python scripts/version.py bump [patch|minor|major]   поднять версию
     python scripts/version.py check                      staged-версия > версии в HEAD? (для pre-commit)
     python scripts/version.py show                       текущая версия
+    python scripts/version.py check-tag v1.2.3           тег релиза совпадает с версией? (для CI)
 """
 from __future__ import annotations
 
@@ -71,6 +72,15 @@ def main(argv: list[str]) -> int:
         if new <= old:
             print(f"version: каждый коммит поднимает версию (сейчас {fmt(old)} -> {fmt(new)}).\n"
                   f"  python scripts/version.py bump && git add {INIT_GIT}", file=sys.stderr)
+            return 1
+        return 0
+    if cmd == "check-tag":
+        if len(argv) < 2:
+            print(__doc__, file=sys.stderr)
+            return 2
+        expected = "v" + fmt(parse(INIT.read_text(encoding="utf-8")))
+        if argv[1] != expected:
+            print(f"version: тег {argv[1]} не совпадает с версией пакета ({expected})", file=sys.stderr)
             return 1
         return 0
     print(__doc__, file=sys.stderr)
