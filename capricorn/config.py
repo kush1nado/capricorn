@@ -30,6 +30,7 @@ class AgentConfig:
     temperature: float = 0.5
     max_tokens: int = 4096
     observe_all: bool = False
+    compact: bool = False               # код свёрнут, подслушанное и старая история ужаты
     extra_prompt: str = ""
     tools: list[str] | None = None      # None — набор по роли (tools.ROLE_TOOLS)
 
@@ -59,6 +60,8 @@ class Config:
     default_target: str = "manager"
     budget: int = 30
     max_history: int = 40
+    context_chars: int = 400            # сжатый контекст: длина одного подслушанного сообщения
+    context_messages: int = 12          # и сколько последних подслушанных сообщений видно
     complex_mode: bool = False
     providers: dict = field(default_factory=lambda: {"mock": {"type": "mock"}})
     agents: dict[str, AgentConfig] = field(default_factory=dict)
@@ -97,6 +100,8 @@ def load_config(path: str | None = None, force_mock: bool = False, base: str | P
         default_target=raw.get("default_target", "manager"),
         budget=int(raw.get("budget", 30)),
         max_history=int(raw.get("max_history", 40)),
+        context_chars=int(raw.get("context_chars", 400)),
+        context_messages=int(raw.get("context_messages", 12)),
         complex_mode=bool(raw.get("complex_mode", False)),
         providers=raw.get("providers") or {"mock": {"type": "mock"}},
         source=source,
@@ -123,6 +128,7 @@ def load_config(path: str | None = None, force_mock: bool = False, base: str | P
             temperature=float(a.get("temperature", 0.5)),
             max_tokens=int(a.get("max_tokens", 4096)),
             observe_all=bool(a.get("observe_all", role == "manager")),
+            compact=bool(a.get("compact", role == "manager")),
             extra_prompt=a.get("extra_prompt", ""),
             tools=list(a["tools"]) if a.get("tools") is not None else None,
         )

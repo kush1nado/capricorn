@@ -617,3 +617,43 @@ async def test_conflict_escape_confirms_and_abort(ui_conflict):
     await pilot.press("y")
     await wait_for(pilot, lambda: git_scr.state == "" and not git_scr.files)
     assert (repo / "calc.py").read_text(encoding="utf-8") == "a = 1\nb = 200\nc = 3\n"
+
+
+async def test_alt_space_closes_conflict_window(ui_conflict):
+    app, pilot, _ = ui_conflict
+    git_scr, _ = await open_conflict(app, pilot)
+    await pilot.press("alt+space")
+    await wait_for(pilot, lambda: app.screen is git_scr)
+
+
+# ------------------------------------------------------- diff ветки агента
+
+async def test_agent_diff_window_and_merge(ui_git):
+    from capricorn.tui import AgentDiffScreen
+    app, pilot = ui_git
+    repo = app.orch.toolbox.root
+    res = await app.orch.toolbox.run("coder1", "write_file", {"path": "feature.py", "content": "x = 1\n"})
+    assert not res.is_error, res.content
+    await submit(pilot, "/diff coder1")
+    await wait_for(pilot, lambda: isinstance(app.screen, AgentDiffScreen) and app.screen.loaded)
+    scr = app.screen
+    assert scr.files == [("?", "feature.py")]
+    await wait_for(pilot, lambda: "+x = 1" in scr.shown)
+    assert "capricorn/coder1" in str(scr.query_one("#ad-title").content)
+    await pilot.press("m")
+    await wait_for(pilot, lambda: (repo / "feature.py").exists() and scr.files == [])
+    await pilot.press("alt+d")                                       # alt+d в окне — закрыть
+    await wait_for(pilot, lambda: not isinstance(app.screen, AgentDiffScreen))
+
+
+async def test_agent_diff_without_work_and_for_non_writer(ui_git):
+    from capricorn.tui import AgentDiffScreen
+    app, pilot = ui_git
+    await submit(pilot, "/diff coder2")
+    await wait_for(pilot, lambda: isinstance(app.screen, AgentDiffScreen) and app.screen.loaded)
+    assert app.screen.files == []
+    await pilot.press("escape")
+    await pilot.press("alt+1")                                       # architect — у него нет своей ветки
+    await pilot.press("alt+d")
+    assert not isinstance(app.screen, AgentDiffScreen)
+    await wait_for(pilot, lambda: any("diff есть у кодеров" in t for t in feed_texts(app)))

@@ -108,6 +108,29 @@ class Worktrees:
             raise RuntimeError(out[:300])
         return out.strip()
 
+    async def changes(self, agent: str) -> list[tuple[str, str]]:
+        """Что агент наменял относительно общего предка с основной веткой, включая незакоммиченное:
+        [(статус A/M/D/?, путь)]. Ничего не коммитит."""
+        if not await self.exists(agent):
+            return []
+        wt, base = await self.path(agent), await self.base(agent)
+        _, out = await run("git", "diff", "--name-status", "--no-renames", base, cwd=str(wt), stderr=False)
+        items = [(s[0], p) for s, p in (line.split("\t", 1) for line in out.splitlines() if "\t" in line)]
+        _, new = await run("git", "ls-files", "--others", "--exclude-standard", cwd=str(wt), stderr=False)
+        return items + [("?", p) for p in new.splitlines() if p]
+
+    async def file_diff(self, agent: str, status: str, path: str, limit: int = 200_000) -> str:
+        wt = await self.path(agent)
+        if status == "?":
+            try:
+                body = (wt / path).read_text(encoding="utf-8", errors="replace")[:limit]
+            except OSError as e:
+                return str(e)
+            return f"новый файл {path}\n" + "".join(f"+{line}\n" for line in body.splitlines())
+        _, out = await run("git", "diff", "--no-color", await self.base(agent), "--", path,
+                           cwd=str(wt), timeout=20, stderr=False)
+        return out[:limit] if out else "(нет текстовых изменений)"
+
     async def merge(self, agent: str) -> Outcome:
         """Влить работу агента в текущую ветку основного репозитория."""
         if not await self.exists(agent):

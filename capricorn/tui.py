@@ -26,6 +26,7 @@ from .orchestrator import USER, Message, Orchestrator
 from .prompts import ROLE_TITLES
 from .sessions import SessionStore, to_markdown
 from .terminal import install_key_fixes, install_web_input_fix
+from .worktrees import is_writer
 
 install_key_fixes()       # alt+цифры и alt+space иначе не доходят (см. terminal.py)
 install_web_input_fix()   # Windows: иначе Esc в окне/браузере срабатывает только со следующей клавишей
@@ -62,12 +63,13 @@ HELP = """\
   /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
   /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
   /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
+  /diff <агент>                 — что агент наменял в своей ветке, до слияния (или alt+d на его панели)
   /sessions  /session <id|last>  /new  /export [файл] — сессии проекта
   /budget N  /help  /quit
 [b]Клавиши[/b] (все через alt):
   alt+1..9, alt+стрелки — выбрать панель     alt+space (или alt+o) — открыть её окно
   в окне агента — личный разговор; esc закрывает окно, итог уходит команде
-  alt+g — полноэкранный Git (ветки, коммиты, конфликты)   alt+z — развернуть панель, esc — свернуть
+  alt+g — полноэкранный Git (ветки, коммиты, конфликты)   alt+d — diff ветки агента   alt+z — развернуть панель, esc — свернуть
   alt+p пауза · alt+s стоп · alt+b ветки · alt+w worktree · alt+n новая сессия · alt+e экспорт · alt+h справка
   (F5/F8/ctrl+b тоже работают; если терминал перехватывает alt+space — жми alt+o)"""
 
@@ -836,6 +838,116 @@ class ConflictScreen(ModalScreen[bool]):
             self.dismiss(False)
 
 
+STATUS_STYLE = {"A": ("+", GREEN), "?": ("+", CYAN), "D": ("-", RED), "M": ("±", BONE)}
+
+
+class AgentDiffScreen(ModalScreen[None]):
+    """Что агент наменял в своей ветке до слияния: файлы слева, diff справа, m — влить."""
+    BINDINGS = [
+        Binding("escape", "close", "Закрыть"),
+        Binding("alt+space", "close", show=False, priority=True),
+        Binding("alt+g", "close", show=False, priority=True),
+        Binding("alt+o", "close", show=False, priority=True),
+        Binding("alt+d", "close", show=False, priority=True),
+        Binding("m", "merge", show=False),
+        Binding("r", "refresh", show=False),
+    ]
+    DEFAULT_CSS = """
+    AgentDiffScreen { align: center middle; background: rgba(5, 5, 6, 0.85); }
+    AgentDiffScreen > Vertical { width: 96%; height: 94%; border: heavy #ff1a3c; background: #08080a; }
+    AgentDiffScreen #ad-title { height: 1; background: #ff1a3c; color: #050506; text-style: bold; padding: 0 1; }
+    AgentDiffScreen #ad-keys { height: 1; background: #140205; color: #a8a29a; padding: 0 1; }
+    AgentDiffScreen #ad-files { width: 36%; height: 1fr; border: heavy #39ff14; background: #08080a; }
+    AgentDiffScreen #ad-view { border: solid #3d0710; padding: 0 1; }
+    AgentDiffScreen #ad-msg { height: 1; padding: 0 1; }
+    """
+
+    def __init__(self, agent: str):
+        super().__init__()
+        self.agent = agent
+        self.files: list[tuple[str, str]] = []
+        self.shown = ""
+        self.loaded = False
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(f"▓ DIFF ┃ {self.agent}", id="ad-title")
+            with Horizontal():
+                yield OptionList(id="ad-files")
+                with VerticalScroll(id="ad-view"):
+                    yield Static("", id="ad-diff")
+            yield Static("", id="ad-msg")
+            yield Static("стрелки — файлы · m — влить в текущую ветку · r — обновить · esc", id="ad-keys")
+
+    def on_mount(self):
+        self.query_one("#ad-files").focus()
+        self.reload()
+
+    @property
+    def wts(self):
+        return self.app.orch.toolbox.worktrees
+
+    def message(self, text: str, ok: bool = True):
+        self.query_one("#ad-msg", Static).update(Text(text, style=GREEN if ok else f"bold {RED}"))
+
+    @work(exclusive=True, group="agent-diff")
+    async def reload(self):
+        try:
+            files = await self.wts.changes(self.agent)
+            base = (await self.wts.base(self.agent))[:7] if files else ""
+        except Exception as e:                      # noqa: BLE001 — например, detached HEAD в основном репозитории
+            self.message(str(e), ok=False)
+            files, base = [], ""
+        self.files = files
+        self.loaded = True
+        since = f" от {base}" if base else ""
+        self.query_one("#ad-title", Static).update(
+            f"▓ DIFF ┃ {self.agent} ┃ {self.wts.branch(self.agent)}{since} ┃ файлов: {len(files)}")
+        ol = self.query_one("#ad-files", OptionList)
+        ol.clear_options()
+        if not files:
+            ol.add_option(Text(f"{self.agent} ничего не менял", style=STEEL))
+            self.query_one("#ad-diff", Static).update("")
+            return
+        for status, path in files:
+            mark, style = STATUS_STYLE.get(status, ("±", BONE))
+            ol.add_option(Text.assemble((f"{mark} ", style), (path, style)))
+        ol.highlighted = 0
+        self.preview(0)
+
+    @on(OptionList.OptionHighlighted, "#ad-files")
+    def on_pick(self, ev: OptionList.OptionHighlighted):
+        if 0 <= ev.option_index < len(self.files):
+            self.preview(ev.option_index)
+
+    @work(exclusive=True, group="agent-diff-file")
+    async def preview(self, index: int):
+        status, path = self.files[index]
+        self.shown = await self.wts.file_diff(self.agent, status, path)
+        self.query_one("#ad-diff", Static).update(render_diff(self.shown))
+
+    @work(group="agent-diff-op")
+    async def action_merge(self):
+        if not self.files:
+            self.message("сливать нечего", ok=False)
+            return
+        try:
+            res = await self.wts.merge(self.agent)
+        except Exception as e:                      # noqa: BLE001
+            self.message(str(e), ok=False)
+            return
+        self.message(res.text, res.ok)
+        self.app.refresh_git()
+        if res.ok:
+            self.reload()
+
+    def action_refresh(self):
+        self.reload()
+
+    def action_close(self):
+        self.dismiss(None)
+
+
 class GitScreen(ModalScreen[None]):
     """Полноэкранный Git в духе lazygit: файлы (индекс, откат, коммит), ветки, коммиты, push/pull."""
     BINDINGS = [
@@ -1067,6 +1179,10 @@ class GitScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+# окна поверх команды: alt+space в них закрывает окно, а не открывает новое
+OVERLAYS = (FocusScreen, GitScreen, ConflictScreen, AgentDiffScreen)
+
+
 class PromptInput(Input):
     BINDINGS = [Binding("up", "hist(-1)", show=False), Binding("down", "hist(1)", show=False)]
 
@@ -1139,6 +1255,7 @@ class CapricornApp(App):
         Binding("alt+up", "move(0, -1)", show=False, priority=True),
         Binding("alt+down", "move(0, 1)", show=False, priority=True),
         Binding("alt+g", "open_git", "Git", priority=True),
+        Binding("alt+d", "open_diff", show=False, priority=True),
         Binding("alt+z", "zoom_selected", show=False, priority=True),
         Binding("alt+p", "toggle_pause", show=False, priority=True),
         Binding("alt+s", "stop", show=False, priority=True),
@@ -1415,6 +1532,8 @@ class CapricornApp(App):
             self.show_worktrees(args[0].lower() if args else "")
         elif cmd == "merge":
             self.merge_work(self._agent(args[0]))
+        elif cmd == "diff":
+            self.open_diff(self._agent(args[0]))
         elif cmd == "models":
             self.feed.system("\n".join(f"{n:9} {a.model}" for n, a in self.cfg.agents.items())
                              + "\nпровайдеры: " + ", ".join(o.providers))
@@ -1567,7 +1686,7 @@ class CapricornApp(App):
         self.zoom(self.selected)
 
     def action_open_selected(self):
-        if isinstance(self.screen, (FocusScreen, GitScreen)):              # alt+space в окне — закрыть его
+        if isinstance(self.screen, OVERLAYS):                              # alt+space в окне — закрыть его
             self.screen.action_close()
             return
         if self.selected == "git":
@@ -1578,12 +1697,26 @@ class CapricornApp(App):
             self.open_focus(self.selected)
 
     def action_open_git(self):
-        if isinstance(self.screen, GitScreen):
+        if isinstance(self.screen, (GitScreen, ConflictScreen, AgentDiffScreen)):
             self.screen.action_close()
             return
         if isinstance(self.screen, FocusScreen):
             return
         self.push_screen(GitScreen(), lambda _: self.refresh_git())
+
+    def action_open_diff(self):
+        if isinstance(self.screen, AgentDiffScreen):
+            self.screen.action_close()
+        elif not isinstance(self.screen, OVERLAYS):
+            self.open_diff(self.selected)
+
+    def open_diff(self, agent: str):
+        if not is_writer(agent):
+            self.feed.system("diff есть у кодеров и тестировщика: выбери их панель (alt+цифра) или /diff coder1")
+        elif not self.orch.toolbox.worktrees.active:
+            self.feed.system("worktree выключены — у агентов нет своих веток")
+        else:
+            self.push_screen(AgentDiffScreen(agent), lambda _: self.refresh_git())
 
     def open_focus(self, agent: str):
         self.focus_agent = agent

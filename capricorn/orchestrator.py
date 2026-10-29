@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .compact import collapse_code, compact_context, compact_history
 from .config import Config
 from .gitinfo import GitWatcher
 from .prompts import system_prompt
@@ -129,10 +130,15 @@ class Agent:
 
     async def _turn(self, batch: list[Message], ctx: list[Message]) -> bool:
         parts = []
-        if ctx:
-            parts.append("(для контекста, отвечать не нужно)\n" +
-                         "\n\n".join(m.as_incoming() for m in ctx))
-        parts.append("\n\n".join(m.as_incoming() for m in batch))
+        overheard = [m.as_incoming() for m in ctx]
+        incoming = [m.as_incoming() for m in batch]
+        if self.cfg.compact:                     # менеджеру код не нужен: он распределяет, а не ревьюит
+            c = self.orch.cfg
+            overheard = compact_context(overheard, c.context_chars, c.context_messages)
+            incoming = [t if m.kind in PERSONAL else collapse_code(t) for m, t in zip(batch, incoming)]
+        if overheard:
+            parts.append("(для контекста, отвечать не нужно)\n" + "\n\n".join(overheard))
+        parts.append("\n\n".join(incoming))
         self.history.append({"role": "user", "content": "\n\n---\n\n".join(parts)})
         self._trim()
         base = len(self.history) - 1              # с этого индекса — всё, что добавит этот ход
@@ -248,6 +254,8 @@ class Agent:
             self.history = self.history[-limit:]
         while self.history and self.history[0]["role"] != "user":
             self.history.pop(0)
+        if self.cfg.compact:
+            compact_history(self.history, self.orch.cfg.context_chars * 2)
 
     def cancel(self):
         if self.gen_task and not self.gen_task.done():

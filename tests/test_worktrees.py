@@ -201,3 +201,21 @@ async def test_status_and_prune(box, repo):
     assert await wts.exists("coder2")
     await ok(box, "coder1", "write_file", path="again.py", content="1")   # пересоздаётся при надобности
     assert await wts.exists("coder1")
+
+
+# ---------------------------------------------------------------- /diff
+async def test_changes_and_file_diff_of_agent(box, repo):
+    wts = box.worktrees
+    assert await wts.changes("coder1") == [], "агент ещё ничего не делал — worktree не создаём"
+    assert not await wts.exists("coder1")
+    await ok(box, "coder1", "edit_file", path="app.py", old="return 1", new="return 2")
+    await ok(box, "coder1", "write_file", path="extra.py", content="y = 2\n")
+    await wts.commit_all("coder1", "часть работы")
+    await ok(box, "coder1", "write_file", path="draft.py", content="z = 3\n")    # не закоммичено
+    changes = await wts.changes("coder1")
+    assert sorted(changes) == [("?", "draft.py"), ("A", "extra.py"), ("M", "app.py")]
+    assert "+    return 2" in await wts.file_diff("coder1", "M", "app.py")
+    assert "+z = 3" in await wts.file_diff("coder1", "?", "draft.py")
+    assert status(repo) == "", "основной репозиторий не тронут"
+    wt = await wts.path("coder1")
+    assert git(wt, "status", "--porcelain") == "?? draft.py", "просмотр ничего не коммитит"
