@@ -8,8 +8,9 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .config import Config
 from .gitinfo import run
@@ -30,6 +31,7 @@ def identity(agent: str) -> list[str]:
 class Outcome:
     ok: bool
     text: str
+    conflicts: list[str] = field(default_factory=list)
 
 
 class Worktrees:
@@ -37,6 +39,9 @@ class Worktrees:
         self.repo = Path(repo).resolve()
         self.cfg = cfg
         self._active: bool | None = None
+        # кто разрешает конфликт слияния в основной ветке: задан (TUI) — слияние остаётся открытым
+        # и уходит человеку в окно Git; не задан — слияние отменяется, а кодера просят сделать sync
+        self.on_conflict: Callable[[str, list[str]], None] | None = None
 
     # ---------------------------------------------------------- состояние
     @property
@@ -136,6 +141,10 @@ class Worktrees:
         if not await self.exists(agent):
             return Outcome(False, f"у {agent} ещё нет рабочей ветки — он ничего не делал")
         main = await self.main_branch()
+        code, _ = await self._git(self.repo, "rev-parse", "-q", "--verify", "MERGE_HEAD")
+        if code == 0:
+            return Outcome(False, f"в {main} не завершено слияние — конфликт разрешает пользователь в окне Git. "
+                                  "Подожди, пока он закончит, и повтори слияние.")
         await self.commit_all(agent, f"{agent}: работа для слияния")
         code, ahead = await self._git(self.repo, "rev-list", "--count", f"{main}..{self.branch(agent)}")
         if code == 0 and ahead.strip() == "0":
@@ -146,8 +155,13 @@ class Worktrees:
         if code == 0:
             return Outcome(True, f"{self.branch(agent)} влита в {main}")
         _, conflicts = await self._git(self.repo, "diff", "--name-only", "--diff-filter=U")
-        await self._git(self.repo, "merge", "--abort")
         files = [f for f in conflicts.splitlines() if f]
+        if files and self.on_conflict is not None:
+            self.on_conflict(agent, files)
+            return Outcome(False, f"конфликт при слиянии {self.branch(agent)} в {main}: {', '.join(files)}. "
+                                  "Слияние оставлено открытым — пользователь разрешает его в окне Git. "
+                                  "Другие ветки пока не вливай, о завершении придёт сообщение.", files)
+        await self._git(self.repo, "merge", "--abort")
         if files:
             return Outcome(False, f"конфликт при слиянии в {main}, слияние отменено. Файлы: {', '.join(files)}. "
                                   f"Попроси @{agent} выполнить sync_branch и разрешить конфликты у себя.")

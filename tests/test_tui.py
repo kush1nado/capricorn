@@ -30,11 +30,20 @@ async def submit(pilot, text):
     await pilot.pause()
 
 
+async def drain(app):
+    """Дождаться воркеров перед разбором приложения: reload окна, запущенный последней клавишей,
+    иначе застаёт teardown. Чем воркер закончился (отменён и т.п.), здесь не важно."""
+    import asyncio
+    while busy := [w for w in app.workers if not w.is_finished]:   # воркер может запустить следующий
+        await asyncio.gather(*(w.wait() for w in busy), return_exceptions=True)
+
+
 @pytest.fixture
 async def ui(tmp_path, fast_mock):
     app = CapricornApp(load_config(force_mock=True), str(tmp_path))
     async with app.run_test(size=(180, 50)) as pilot:
         yield app, pilot
+        await drain(app)
         app.orch.stop_all()
         for t in app.orch._tasks:
             t.cancel()
@@ -143,6 +152,7 @@ async def ui_git(tmp_path, fast_mock):
     app = CapricornApp(load_config(force_mock=True), str(repo))
     async with app.run_test(size=(180, 50)) as pilot:
         yield app, pilot
+        await drain(app)
         app.orch.stop_all()
         for t in app.orch._tasks:
             t.cancel()
@@ -457,6 +467,17 @@ async def open_git(app, pilot):
     return app.screen
 
 
+async def test_git_screen_late_git_answer_after_close(ui_git):
+    """Регрессия: git ответил, когда окно уже закрыто, — show/message/show_state не должны ронять приложение."""
+    app, pilot = ui_git
+    scr = await open_git(app, pilot)
+    await pilot.press("escape")
+    await wait_for(pilot, lambda: app.screen is not scr)
+    scr.show("diff --git a/x b/x")
+    scr.message("готово")
+    scr.show_state()
+
+
 async def test_git_screen_stage_commit_branch(ui_git):
     from capricorn.tui import InputModal
     app, pilot = ui_git
@@ -531,6 +552,7 @@ async def ui_conflict(tmp_path, fast_mock):
     app = CapricornApp(load_config(force_mock=True), str(repo))
     async with app.run_test(size=(180, 50)) as pilot:
         yield app, pilot, repo
+        await drain(app)
         app.orch.stop_all()
         for t in app.orch._tasks:
             t.cancel()
@@ -657,3 +679,37 @@ async def test_agent_diff_without_work_and_for_non_writer(ui_git):
     await pilot.press("alt+d")
     assert not isinstance(app.screen, AgentDiffScreen)
     await wait_for(pilot, lambda: any("diff есть у кодеров" in t for t in feed_texts(app)))
+
+
+async def test_merge_conflict_opens_git_window_and_tells_manager(ui_git):
+    from capricorn.tui import GitScreen
+    app, pilot = ui_git
+    box = app.orch.toolbox
+    repo = box.root
+    for who, word in (("coder1", "один"), ("coder2", "два")):
+        res = await box.run(who, "write_file", {"path": "a.txt", "content": word})
+        assert not res.is_error, res.content
+    assert not (await box.run("manager", "merge_work", {"agent": "coder1"})).is_error
+    res = await box.run("manager", "merge_work", {"agent": "coder2"})
+    assert res.is_error and "окне Git" in res.content
+    await wait_for(pilot, lambda: isinstance(app.screen, GitScreen) and app.screen.state == "merge")
+    assert any("конфликт при слиянии capricorn/coder2" in t for t in feed_texts(app))
+    scr = app.screen
+
+    (repo / "a.txt").write_text("один и два", encoding="utf-8")
+    from helpers import git
+    git(repo, "add", "a.txt")
+    scr.reload()
+    await wait_for(pilot, lambda: not any(c.conflict for c in scr.files))
+    await pilot.press("m")
+    await wait_for(pilot, lambda: scr.state == "")
+    await wait_for(pilot, lambda: any(m.sender == "git" and "manager" in m.to and "завершил слияние" in m.content
+                                      for m in app.orch.messages))
+
+
+async def test_usage_command(ui):
+    app, pilot = ui
+    await submit(pilot, "/usage")
+    await wait_for(pilot, lambda: any(t.startswith("АГЕНТ") and "итого" in t for t in feed_texts(app)))
+    from capricorn.tui import HELP
+    assert "/usage" in HELP

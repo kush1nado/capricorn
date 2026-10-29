@@ -36,14 +36,21 @@ def compact_context(items: list[str], chars: int, count: int) -> list[str]:
     return ([f"… ранее ещё сообщений: {skipped}"] if skipped else []) + kept
 
 
-def compact_history(history: list[dict], chars: int) -> None:
-    """Старые записи (кроме последних KEEP_FULL) — в конспект. Структура и id вызовов инструментов не меняются."""
+def compact_history(history: list[dict], chars: int) -> int:
+    """Старые записи (кроме последних KEEP_FULL) — в конспект. Структура и id вызовов инструментов не меняются.
+    Возвращает, сколько символов срезано."""
+    saved = 0
     for entry in history[:-KEEP_FULL]:
         if entry.get("compact"):
             continue
         if entry["role"] in ("user", "assistant") and len(entry.get("content") or "") > chars:
-            entry["content"] = digest(entry["content"], chars)
+            short = digest(entry["content"], chars)
+            saved += len(entry["content"]) - len(short)
+            entry["content"] = short
         for r in entry.get("results") or []:
             if len(r.get("content") or "") > chars:
-                r["content"] = digest(r["content"], chars)
+                short = digest(r["content"], chars)
+                saved += len(r["content"]) - len(short)
+                r["content"] = short
         entry["compact"] = True
+    return saved

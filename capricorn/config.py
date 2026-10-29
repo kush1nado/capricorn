@@ -66,6 +66,7 @@ class Config:
     providers: dict = field(default_factory=lambda: {"mock": {"type": "mock"}})
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    prices: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # $ за 1M: вход, кэш, выход
     source: str = "defaults"
 
 
@@ -107,6 +108,10 @@ def load_config(path: str | None = None, force_mock: bool = False, base: str | P
         source=source,
     )
     cfg.providers.setdefault("mock", {"type": "mock"})
+    for model, p in (raw.get("prices") or {}).items():
+        if not isinstance(p, (list, tuple)) or len(p) != 3:
+            raise ValueError(f"prices.{model}: нужно [вход, кэш, выход] — $ за 1M токенов")
+        cfg.prices[str(model)] = tuple(float(x) for x in p)
 
     t = raw.get("tools") or {}
     cfg.tools = ToolsConfig(

@@ -26,6 +26,7 @@ from .orchestrator import USER, Message, Orchestrator
 from .prompts import ROLE_TITLES
 from .sessions import SessionStore, to_markdown
 from .terminal import install_key_fixes, install_web_input_fix
+from .usage import k, usage_report
 from .worktrees import is_writer
 
 install_key_fixes()       # alt+цифры и alt+space иначе не доходят (см. terminal.py)
@@ -64,6 +65,7 @@ HELP = """\
   /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
   /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
   /diff <агент>                 — что агент наменял в своей ветке, до слияния (или alt+d на его панели)
+  /usage                        — ходы, токены и стоимость по агентам за сессию
   /sessions  /session <id|last>  /new  /export [файл] — сессии проекта
   /budget N  /help  /quit
 [b]Клавиши[/b] (все через alt):
@@ -76,10 +78,6 @@ HELP = """\
 
 def ago(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
-
-
-def k(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
 # ------------------------------------------------------------------ widgets
@@ -888,6 +886,8 @@ class AgentDiffScreen(ModalScreen[None]):
         return self.app.orch.toolbox.worktrees
 
     def message(self, text: str, ok: bool = True):
+        if not self.is_attached:
+            return
         self.query_one("#ad-msg", Static).update(Text(text, style=GREEN if ok else f"bold {RED}"))
 
     @work(exclusive=True, group="agent-diff")
@@ -900,6 +900,8 @@ class AgentDiffScreen(ModalScreen[None]):
             files, base = [], ""
         self.files = files
         self.loaded = True
+        if not self.is_attached:            # окно закрыли, пока git отвечал
+            return
         since = f" от {base}" if base else ""
         self.query_one("#ad-title", Static).update(
             f"▓ DIFF ┃ {self.agent} ┃ {self.wts.branch(self.agent)}{since} ┃ файлов: {len(files)}")
@@ -924,6 +926,8 @@ class AgentDiffScreen(ModalScreen[None]):
     async def preview(self, index: int):
         status, path = self.files[index]
         self.shown = await self.wts.file_diff(self.agent, status, path)
+        if not self.is_attached:
+            return
         self.query_one("#ad-diff", Static).update(render_diff(self.shown))
 
     @work(group="agent-diff-op")
@@ -1023,15 +1027,21 @@ class GitScreen(ModalScreen[None]):
         return self.app.orch.git
 
     def message(self, text: str, ok: bool = True):
+        if not self.is_attached:
+            return
         self.query_one("#git-msg", Static).update(Text(text, style=GREEN if ok else f"bold {RED}"))
 
     def show(self, text: str):
         self.shown = text
+        if not self.is_attached:            # git ответил, когда окно уже закрыли
+            return
         self.query_one("#commit-view", Static).update(render_diff(text) if text else Text("нет изменений", style=STEEL))
 
     @work(exclusive=True, group="git-screen")
     async def reload(self):
         snap = await self.git.snapshot()
+        if not self.is_attached:
+            return
         self.current_branch = snap.branch
         track = f" → {snap.upstream} ↑{snap.ahead} ↓{snap.behind}" if snap.upstream else ""
         self.query_one("#git-title", Static).update(f"▓ GIT ┃ {snap.branch}{track}")
@@ -1041,6 +1051,8 @@ class GitScreen(ModalScreen[None]):
         self.show_state()
         self.branches = snap.branches
         self.commits = await self.git.commits()
+        if not self.is_attached:
+            return
         fl = self.query_one("#files", OptionList)
         keep = fl.highlighted
         fl.clear_options()
@@ -1060,6 +1072,8 @@ class GitScreen(ModalScreen[None]):
             self.show_commit(self.commits[0][0])
 
     def show_state(self):
+        if not self.is_attached:
+            return
         banner = self.query_one("#git-state", Static)
         banner.set_class(bool(self.state), "on")
         if not self.state:
@@ -1114,6 +1128,8 @@ class GitScreen(ModalScreen[None]):
     async def run_git(self, op, *args):
         ok, out = await op(*args)
         self.message(git_message(out, ok), ok)
+        if ok and op in (self.git.continue_op, self.git.abort_op):
+            self.app.merge_done(op == self.git.continue_op)
         self.reload()
         self.app.refresh_git()
 
@@ -1281,6 +1297,7 @@ class CapricornApp(App):
         self.resume = resume            # продолжить последнюю сессию проекта
         self.orch: Orchestrator | None = None
         self.selected = "manager"       # панель, которую откроет alt+space
+        self.merging = ""               # чья ветка вливается с конфликтом, открытым в окне Git
         self.focus_agent: str | None = None
         self.focus_screen: FocusScreen | None = None
         self.snapshot = GitSnapshot()
@@ -1335,6 +1352,7 @@ class CapricornApp(App):
         if self.resume and previous:
             restored = self.orch.store.load(previous)
             warnings = self.orch.restore(restored)
+        self.orch.toolbox.worktrees.on_conflict = self.merge_conflict
         self.orch.start()
         self.feed.system(f"▓ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
         if restored:
@@ -1532,6 +1550,8 @@ class CapricornApp(App):
             self.show_worktrees(args[0].lower() if args else "")
         elif cmd == "merge":
             self.merge_work(self._agent(args[0]))
+        elif cmd == "usage":
+            self.feed.system(usage_report(self.orch))
         elif cmd == "diff":
             self.open_diff(self._agent(args[0]))
         elif cmd == "models":
@@ -1625,6 +1645,33 @@ class CapricornApp(App):
         except Exception as e:  # noqa: BLE001
             self.feed.system(f"▲ {e}", "error")
         self.refresh_git()
+
+    def merge_conflict(self, agent: str, files: list[str]):
+        """Слияние ветки агента упёрлось в конфликт: оно оставлено открытым, разбирает человек в окне Git."""
+        self.merging = agent
+        self.feed.system(f"▲ конфликт при слиянии capricorn/{agent}: {', '.join(files)}. "
+                         "Окно Git: enter на файле — разобрать, m — завершить слияние, A — отменить", "warn")
+        self.call_later(self.show_merge_conflict)
+
+    def show_merge_conflict(self):
+        git_open = next((s for s in self.screen_stack if isinstance(s, GitScreen)), None)
+        if git_open is not None:
+            git_open.reload()
+        elif not isinstance(self.screen, OVERLAYS):
+            self.push_screen(GitScreen(), lambda _: self.refresh_git())
+        self.refresh_git()
+
+    def merge_done(self, finished: bool):
+        """Пользователь завершил или отменил слияние в окне Git — сказать менеджеру, если сливал он."""
+        agent, self.merging = self.merging, ""
+        if not agent:
+            return
+        if finished:
+            self.orch.notify("manager", f"пользователь завершил слияние capricorn/{agent}: конфликты разрешены, "
+                                        "работа влита. Можно вливать следующие ветки.")
+        else:
+            self.orch.notify("manager", f"пользователь отменил слияние capricorn/{agent}. Попроси @{agent} "
+                                        "выполнить sync_branch и разрешить конфликты у себя, потом влей снова.")
 
     @work(group="git")
     async def switch_branch(self, branch: str):

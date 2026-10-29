@@ -84,6 +84,7 @@ class Agent:
         self.tokens_out = 0
         self.tokens_cached = 0              # входные из кэша (повтор системного промпта и истории)
         self.turns = 0
+        self.compact_saved = 0              # сколько символов срезало сжатие контекста
 
     @property
     def cfg(self):
@@ -134,8 +135,10 @@ class Agent:
         incoming = [m.as_incoming() for m in batch]
         if self.cfg.compact:                     # менеджеру код не нужен: он распределяет, а не ревьюит
             c = self.orch.cfg
+            before = sum(map(len, overheard + incoming))
             overheard = compact_context(overheard, c.context_chars, c.context_messages)
             incoming = [t if m.kind in PERSONAL else collapse_code(t) for m, t in zip(batch, incoming)]
+            self.compact_saved += max(0, before - sum(map(len, overheard + incoming)))
         if overheard:
             parts.append("(для контекста, отвечать не нужно)\n" + "\n\n".join(overheard))
         parts.append("\n\n".join(incoming))
@@ -255,7 +258,7 @@ class Agent:
         while self.history and self.history[0]["role"] != "user":
             self.history.pop(0)
         if self.cfg.compact:
-            compact_history(self.history, self.orch.cfg.context_chars * 2)
+            self.compact_saved += compact_history(self.history, self.orch.cfg.context_chars * 2)
 
     def cancel(self):
         if self.gen_task and not self.gen_task.done():
@@ -303,7 +306,7 @@ class Orchestrator:
             "agents": {n: {"history": a.history, "pending": [asdict(m) for m in a.pending],
                            "context": [asdict(m) for m in a.context], "tokens_in": a.tokens_in,
                            "tokens_cached": a.tokens_cached,
-                           "tokens_out": a.tokens_out, "turns": a.turns}
+                           "tokens_out": a.tokens_out, "turns": a.turns, "compact_saved": a.compact_saved}
                        for n, a in self.agents.items()},
             "cli_sessions": {name: dict(p.sessions) for name, p in self.providers.items() if hasattr(p, "sessions")},
         }
@@ -344,6 +347,7 @@ class Orchestrator:
             a.context = [Message(**m) for m in st.get("context") or []]
             a.tokens_in, a.tokens_out, a.turns = st.get("tokens_in", 0), st.get("tokens_out", 0), st.get("turns", 0)
             a.tokens_cached = st.get("tokens_cached", 0)
+            a.compact_saved = st.get("compact_saved", 0)
             a.status = "idle"
         for pname, sessions in (state.get("cli_sessions") or {}).items():
             p = self.providers.get(pname)

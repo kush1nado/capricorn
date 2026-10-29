@@ -166,6 +166,25 @@ async def test_conflict_merge_then_sync_and_resolve(box, repo):
     assert status(repo) == ""
 
 
+async def test_conflict_left_open_for_user_when_handler_set(box, repo):
+    seen = []
+    box.worktrees.on_conflict = lambda agent, files: seen.append((agent, files))
+    await ok(box, "coder1", "edit_file", path="app.py", old="return 1", new="return 'один'")
+    await ok(box, "coder2", "edit_file", path="app.py", old="return 1", new="return 'два'")
+    await ok(box, "tester", "write_file", path="c3.py", content="x")
+    await ok(box, "manager", "merge_work", agent="coder1")
+
+    msg = await err(box, "manager", "merge_work", agent="coder2")
+    assert seen == [("coder2", ["app.py"])]
+    assert "окне Git" in msg and "sync_branch" not in msg
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "слияние оставлено открытым"
+    assert "<<<<<<< " in (repo / "app.py").read_text(encoding="utf-8")
+
+    msg = await err(box, "manager", "merge_work", agent="tester")
+    assert "не завершено слияние" in msg and not (repo / "c3.py").exists()
+    assert seen == [("coder2", ["app.py"])], "второй раз окно не открываем"
+
+
 async def test_sync_brings_main_into_branch(box, repo):
     await ok(box, "coder1", "write_file", path="a.py", content="a")
     await ok(box, "coder2", "write_file", path="b.py", content="b")
