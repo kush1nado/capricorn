@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -42,6 +43,7 @@ THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
 # модели копируют формат входящих «[от X → Y]:» (иногда в **жирном**) в начало своего ответа
 ECHO_RE = re.compile(r"\A\s*(?:\*\*)?\[от [^\]\n]*\]:?(?:\*\*)?:?\s*")
 DIRECTIVE_RE = re.compile(r"^[ \t]*(MERGE[ \t]+(\w+)|SYNC)[ \t]*$", re.M)
+BRANCH_NOTE_FILES = 15            # сколько изменённых файлов перечислять в пометке о ветке
 
 
 @dataclass
@@ -242,7 +244,12 @@ class Agent:
             msg = self.orch.deliver(Message(id=msg_id, sender=self.name, to=[USER], content=clean, kind="private"),
                                     emit_message=False)
         else:
+            if self.orch.parse_targets(self.name, clean):     # адресатам — где лежит работа пишущего агента
+                clean += await self.orch.branch_note(self.name)
             msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
+            if (not any(n in self.orch.agents for n in msg.to)
+                    and not DIRECTIVE_RE.search(CODE_RE.sub("", clean))):
+                self.orch.budget += 1     # ответ никого не будит — цепочку не продолжит, бюджет не тратит
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
@@ -541,10 +548,39 @@ class Orchestrator:
         ws = await self.toolbox.workspace_for(agent, None) if tc.enabled else self.toolbox
         wts = self.toolbox.worktrees
         provider = self.provider_for(agent)
-        return {"path": str(ws.root), "write": write, "test_command": tc.test_command,
-                "shell": write or getattr(provider, "readonly_shell", False),
-                "branch": wts.branch(agent) if ws.label else "",
-                "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
+        out = {"path": str(ws.root), "write": write, "test_command": tc.test_command,
+               "shell": write or getattr(provider, "readonly_shell", False),
+               "branch": wts.branch(agent) if ws.label else "",
+               "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
+        if write and wts.active:
+            try:
+                out["tmp"] = str(await wts.temp_dir(Path(ws.root)))
+            except (OSError, RuntimeError):       # без своей TEMP агент всё равно работает
+                pass
+        return out
+
+    async def branch_note(self, agent: str) -> str:
+        """Пометка к сообщению пишущего агента: его ветка, worktree и изменённые файлы. Без неё ревьюер
+        не знает, где искать код (живой прогон: «покажи, где файлы» — и ход впустую)."""
+        wts = self.toolbox.worktrees
+        if not (is_writer(agent) and wts.active):
+            return ""
+        try:
+            changes = await wts.changes(agent)
+            path = await wts.path(agent)
+        except Exception:  # noqa: BLE001 — пометка необязательна, git-ошибка не должна ронять ход
+            return ""
+        if not changes:
+            return ""
+        try:
+            where = Path(os.path.relpath(path, self.repo)).as_posix()
+        except ValueError:                      # другой диск на Windows
+            where = str(path)
+        marks = {"A": "+", "?": "+", "M": "±", "D": "-"}
+        files = [f"{marks.get(s, '±')} {p}" for s, p in changes[:BRANCH_NOTE_FILES]]
+        if len(changes) > BRANCH_NOTE_FILES:
+            files.append(f"… ещё {len(changes) - BRANCH_NOTE_FILES}")
+        return f"\n\n[ветка {wts.branch(agent)} · worktree {where} · изменено: {', '.join(files)}]"
 
     async def ask_once(self, agent: str, system: str, prompt: str) -> str:
         """Разовый вопрос агенту вне диалога команды: его история и CLI-сессия не трогаются,

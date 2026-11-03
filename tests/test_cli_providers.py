@@ -381,3 +381,21 @@ async def test_claude_unknown_model_gets_human_hint(fake, tmp_path):
     msg = str(e.value)
     assert "модель «opus» недоступна" in msg and "npm install -g @anthropic-ai/claude-code" in msg
     assert "claude-opus-4-1-20250805" in msg
+
+
+async def test_writer_gets_temp_dir_inside_its_worktree(git_orch):
+    """Живой прогон: песочница Codex не пускает pytest в системный TEMP — tmp_path падал у всех тестов."""
+    orch, _, repo = git_orch()
+    ws_c1 = await orch.native_workspace("coder1")
+    tmp = Path(ws_c1["tmp"])
+    assert tmp.is_dir() and tmp.parent == Path(ws_c1["path"])
+    (tmp / "junk.txt").write_text("x", encoding="utf-8")
+    assert git(Path(ws_c1["path"]), "status", "--porcelain") == "", "временная папка не попадает в git"
+    assert "tmp" not in await orch.native_workspace("reviewer")
+
+
+async def test_cli_gets_temp_env_from_workspace(fake, tmp_path):
+    p = CodexProvider("codex", {"command": fake([{"events": CODEX_TURN}])})
+    await collect(p, workspace=ws(tmp_path, write=True, tmp=str(tmp_path / ".capricorn-tmp")))
+    rec, = fake.log()
+    assert set(rec["temp"].values()) == {str(tmp_path / ".capricorn-tmp")}

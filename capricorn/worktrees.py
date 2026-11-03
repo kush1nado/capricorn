@@ -17,6 +17,7 @@ from .gitinfo import run
 
 BRANCH_PREFIX = "capricorn/"
 MARKERS = ("<<<<<<< ", ">>>>>>> ")
+TEMP_DIR = ".capricorn-tmp"      # временные файлы пишущего CLI-агента (TEMP), вне git
 
 
 def is_writer(agent: str) -> bool:
@@ -71,6 +72,20 @@ class Worktrees:
         if code != 0 or not out:
             raise RuntimeError("основной репозиторий в detached HEAD — переключись на ветку")
         return out.strip()
+
+    async def temp_dir(self, root: Path) -> Path:
+        """Временная папка внутри рабочей папки агента: песочница Codex не пускает в системный TEMP,
+        и pytest с tmp_path падает. Папка исключена через info/exclude — общий для всех worktree."""
+        tmp = root / TEMP_DIR
+        tmp.mkdir(exist_ok=True)
+        exclude = await self.git_dir() / "info" / "exclude"
+        line = f"/{TEMP_DIR}/"
+        text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
+        if line not in text.splitlines():
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            with exclude.open("a", encoding="utf-8", newline="") as f:
+                f.write(("" if not text or text.endswith("\n") else "\n") + line + "\n")
+        return tmp
 
     async def exists(self, agent: str) -> bool:
         return (await self.path(agent) / ".git").exists()

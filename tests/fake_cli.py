@@ -1,6 +1,6 @@
 """Поддельный Codex/Claude CLI для тестов.
 
-Пишет в FAKE_CLI_LOG строку JSON: argv, stdin, cwd, CLAUDECODE. Выдаёт события из FAKE_CLI_SCRIPT —
+Пишет в FAKE_CLI_LOG строку JSON: argv, stdin, cwd, CLAUDECODE, TEMP/TMP/TMPDIR. Выдаёт события из FAKE_CLI_SCRIPT —
 JSON-списка запусков: [{"events": [...], "exit": 0, "stderr": "", "sleep": 0, "pidfile": ""}, ...];
 n-й запуск берёт n-й элемент (последний повторяется).
 """
@@ -20,7 +20,9 @@ if os.path.exists(log_path):
 stdin = sys.stdin.buffer.read().decode("utf-8")
 with open(log_path, "a", encoding="utf-8") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd(),
-                        "claudecode": os.environ.get("CLAUDECODE")}, ensure_ascii=False) + "\n")
+                        "claudecode": os.environ.get("CLAUDECODE"),
+                        "temp": {k: os.environ.get(k) for k in ("TEMP", "TMP", "TMPDIR")}},
+                       ensure_ascii=False) + "\n")
 
 run = runs[min(n, len(runs) - 1)]
 if run.get("pidfile"):

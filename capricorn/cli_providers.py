@@ -116,8 +116,10 @@ class AgentCLIProvider(Provider):
         return last if resumed else f"{system}\n\n---\n\n{last}"
 
     # -------------------------------------------------------------- запуск
-    async def _events(self, argv: list[str], stdin_text: str, cwd: str) -> AsyncIterator[dict]:
+    async def _events(self, argv: list[str], stdin_text: str, cwd: str, tmp: str = "") -> AsyncIterator[dict]:
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+        if tmp:                       # временные файлы — в разрешённой песочницей папке (pytest tmp_path)
+            env.update(TEMP=tmp, TMP=tmp, TMPDIR=tmp)
         kw = {"start_new_session": True} if os.name != "nt" else {}
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -191,7 +193,7 @@ class CodexProvider(AgentCLIProvider):
         session = self.sessions.get(agent)
         argv = self.argv(model=model, workdir=ws["path"], write=ws["write"], session=session)
         said = False
-        events = self._events(argv, self.prompt(system, messages, bool(session)), ws["path"])
+        events = self._events(argv, self.prompt(system, messages, bool(session)), ws["path"], ws.get("tmp", ""))
         async with contextlib.aclosing(events):
             async for ev in events:
                 t = ev.get("type")
@@ -269,7 +271,7 @@ class ClaudeCodeProvider(AgentCLIProvider):
         argv = self.argv(model=model, write=ws["write"], session=session,
                          test_command=ws.get("test_command", ""))
         said = False
-        events = self._events(argv, self.prompt(system, messages, bool(session)), ws["path"])
+        events = self._events(argv, self.prompt(system, messages, bool(session)), ws["path"], ws.get("tmp", ""))
         async with contextlib.aclosing(events):
             async for ev in events:
                 t = ev.get("type")

@@ -28,7 +28,7 @@ async def test_handoff_chain(make_orch):
         ("architect", ["manager"]),
         ("manager", []),
     ]
-    assert orch.budget == orch.cfg.budget - 3
+    assert orch.budget == orch.cfg.budget - 2      # «Принято.» без адресатов — ход возвращён
     arch = orch.agents["architect"]
     assert arch.history[0] == {"role": "user", "content": "[от manager → architect]: @architect набросай план"}
     assert arch.history[1]["role"] == "assistant"
@@ -122,7 +122,7 @@ async def test_budget_exhaustion_pauses_and_continue_resumes(make_orch):
 
 
 async def test_new_user_task_restores_budget(make_orch):
-    orch, _ = make_orch({"manager": "ок"}, budget=1)
+    orch, _ = make_orch({"manager": "@architect глянь", "architect": "ок"}, budget=1)   # с адресатом — ход списан
     orch.user_says("раз")
     await settle(orch)
     assert orch.budget == 0
@@ -244,7 +244,7 @@ async def test_coder_writes_file_then_reports(make_orch, tmp_path):
 
     msg, = [m for m in messages(events) if m.sender == "coder1"]
     assert msg.to == ["reviewer"] and msg.content == "Готово, `calc.py`. @reviewer"
-    assert orch.agents["coder1"].turns == 1 and orch.budget == orch.cfg.budget - 2   # coder1 + reviewer
+    assert orch.agents["coder1"].turns == 1 and orch.budget == orch.cfg.budget - 1   # reviewer ответил без адресатов
 
     end = [d for d in kinds(events, "stream_end") if d["agent"] == "coder1"][0]
     assert "» `write_file` `calc.py` создан, 2 стр." in end["text"]
