@@ -120,6 +120,9 @@ class AgentCLIProvider(Provider):
         env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
         if tmp:                       # временные файлы — в разрешённой песочницей папке (pytest tmp_path)
             env.update(TEMP=tmp, TMP=tmp, TMPDIR=tmp)
+            # Python 3.13+ на Windows даёт папкам с режимом 0o700 права «только владелец», а владелец в песочнице
+            # Codex — её пользователь: .pytest_cache в worktree потом не открыть и не удалить. Кэш агенту не нужен.
+            env["PYTEST_ADDOPTS"] = f"{env.get('PYTEST_ADDOPTS', '')} -p no:cacheprovider".strip()
         kw = {"start_new_session": True} if os.name != "nt" else {}
         try:
             proc = await asyncio.create_subprocess_exec(

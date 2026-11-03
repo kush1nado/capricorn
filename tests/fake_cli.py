@@ -21,7 +21,7 @@ stdin = sys.stdin.buffer.read().decode("utf-8")
 with open(log_path, "a", encoding="utf-8") as f:
     f.write(json.dumps({"argv": sys.argv[1:], "stdin": stdin, "cwd": os.getcwd(),
                         "claudecode": os.environ.get("CLAUDECODE"),
-                        "temp": {k: os.environ.get(k) for k in ("TEMP", "TMP", "TMPDIR")}},
+                        "temp": {k: os.environ.get(k) for k in ("TEMP", "TMP", "TMPDIR", "PYTEST_ADDOPTS")}},
                        ensure_ascii=False) + "\n")
 
 run = runs[min(n, len(runs) - 1)]

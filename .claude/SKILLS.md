@@ -151,6 +151,10 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   спорные развилки — спроси его. Окружение: `env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u NO_COLOR`.
 - Пишущим CLI-агентам `native_workspace` даёт `tmp` (`<worktree>/.capricorn-tmp`, исключена в `info/exclude`),
   провайдер ставит её в TEMP/TMP/TMPDIR: песочница Codex не пускает pytest в системный TEMP.
+- **Неудаляемые папки после Codex на Windows** — не DENY на `.git`, а Python 3.13+: `mkdir(mode=0o700)` /
+  `mkdtemp` дают права «только владелец», владелец — пользователь песочницы. Так ведут себя `.pytest_cache`
+  (поэтому `PYTEST_ADDOPTS=-p no:cacheprovider`) и `pytest-of-*`. Проверка: `icacls` на папку → «Access is denied».
+  Права (`takeown`/`icacls`) сам не меняй — это решение владельца. Демо для прогонов создавай в новой папке.
 - Ответ агента без адресатов-агентов (и без директив) возвращает ход в бюджет: цепочку он не продолжит.
   Сообщение пишущего агента с адресатами получает пометку о ветке (`Orchestrator.branch_note`).
 - Реплики пользователя команде (`user_tasks`) каждый агент получает один раз в начале своего хода (`task_seen`).

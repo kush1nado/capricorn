@@ -1624,9 +1624,13 @@ class CapricornApp(App):
             return
         try:
             if sub == "prune":
-                removed = await wts.prune(self.orch.roster)
-                self.feed.system(f"убраны влитые worktree: {', '.join(removed)}" if removed
-                                 else "убирать нечего: у всех есть невлитая работа или worktree не созданы")
+                removed, failed = await wts.prune(self.orch.roster)
+                if removed or not failed:
+                    self.feed.system(f"убраны влитые worktree: {', '.join(removed)}" if removed
+                                     else "убирать нечего: у всех есть невлитая работа или worktree не созданы")
+                for agent, why in failed:
+                    self.feed.system(f"▲ {agent}: worktree не удалён — {why}. Файлы, созданные в песочнице Codex, "
+                                     "бывают доступны только ей (см. README)", "warn")
             else:
                 self.feed.system("\n".join(await wts.status(self.orch.roster)))
         except Exception as e:  # noqa: BLE001

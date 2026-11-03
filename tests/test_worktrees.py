@@ -214,11 +214,22 @@ async def test_status_and_prune(box, repo):
     lines = await wts.status(agents)
     assert "незакоммиченных файлов: 1" in lines[0] and len(lines) == 3
     await ok(box, "manager", "merge_work", agent="coder1")
-    assert await wts.prune(agents) == ["coder1"]                # coder2 не влит — его не трогаем
+    assert await wts.prune(agents) == (["coder1"], [])          # coder2 не влит — его не трогаем
     assert not await wts.exists("coder1")
     assert "capricorn/coder1" not in git(repo, "branch", "--list", "capricorn/*")
     assert await wts.exists("coder2")
     await ok(box, "coder1", "write_file", path="again.py", content="1")   # пересоздаётся при надобности
+    assert await wts.exists("coder1")
+
+
+async def test_prune_reports_worktree_it_could_not_remove(box, repo):
+    """Файлы, созданные в песочнице Codex, бывают недоступны пользователю — тогда prune не молчит."""
+    wts = box.worktrees
+    await ok(box, "coder1", "write_file", path="p.py", content="p")
+    await ok(box, "manager", "merge_work", agent="coder1")
+    git(repo, "worktree", "lock", str(await wts.path("coder1")))   # как недоступный файл: удалить не выйдет
+    removed, failed = await wts.prune(["coder1"])
+    assert removed == [] and failed[0][0] == "coder1" and failed[0][1]
     assert await wts.exists("coder1")
 
 

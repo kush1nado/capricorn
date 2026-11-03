@@ -238,10 +238,11 @@ class Worktrees:
                          f"незакоммиченных файлов: {n}")
         return lines
 
-    async def prune(self, agents: list[str]) -> list[str]:
-        """Убрать worktree и ветки, полностью влитые в основную ветку и без незакоммиченных изменений."""
+    async def prune(self, agents: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+        """Убрать worktree и ветки, полностью влитые в основную ветку и без незакоммиченных изменений.
+        Возвращает (убранные, [(агент, почему не вышло)]): файлы из песочницы Codex бывают недоступны."""
         main = await self.main_branch()
-        removed = []
+        removed, failed = [], []
         for a in agents:
             if not is_writer(a) or not await self.exists(a):
                 continue
@@ -250,8 +251,10 @@ class Worktrees:
             _, ahead = await self._git(self.repo, "rev-list", "--count", f"{main}..{self.branch(a)}")
             if dirty.strip() or ahead.strip() != "0":
                 continue
-            code, _ = await self._git(self.repo, "worktree", "remove", str(wt))
+            code, out = await self._git(self.repo, "worktree", "remove", str(wt))
             if code == 0:
                 await self._git(self.repo, "branch", "-d", self.branch(a))
                 removed.append(a)
-        return removed
+            else:
+                failed.append((a, (out.strip().splitlines() or ["git worktree remove не удался"])[-1][:300]))
+        return removed, failed

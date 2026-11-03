@@ -112,3 +112,9 @@ async def test_late_agent_sees_task_and_followups(team):
     await settle(orch)
     to_reviewer = orch.provider_for("reviewer").calls_for("reviewer")[0].messages[-1]["content"]
     assert "сортировкой по алфавиту" in to_reviewer and "вариант А" in to_reviewer
+
+
+def test_manager_does_not_relay_direct_messages():
+    """Живой прогон 3: менеджер пересказал кодеру замечания ревьюера — лишний ход после одобрения."""
+    mgr = prompt("manager").lower()
+    assert "не пересказывай" in mgr and "один раз" in mgr

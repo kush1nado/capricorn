@@ -398,4 +398,14 @@ async def test_cli_gets_temp_env_from_workspace(fake, tmp_path):
     p = CodexProvider("codex", {"command": fake([{"events": CODEX_TURN}])})
     await collect(p, workspace=ws(tmp_path, write=True, tmp=str(tmp_path / ".capricorn-tmp")))
     rec, = fake.log()
-    assert set(rec["temp"].values()) == {str(tmp_path / ".capricorn-tmp")}
+    env = rec["temp"]
+    assert {env[k] for k in ("TEMP", "TMP", "TMPDIR")} == {str(tmp_path / ".capricorn-tmp")}
+    # pytest создаёт кэш с правами «только владелец», а владелец в песочнице — не пользователь
+    assert "-p no:cacheprovider" in env["PYTEST_ADDOPTS"]
+
+
+async def test_cli_keeps_user_pytest_addopts(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    p = CodexProvider("codex", {"command": fake([{"events": CODEX_TURN}])})
+    await collect(p, workspace=ws(tmp_path, write=True, tmp=str(tmp_path / "t")))
+    assert fake.log()[0]["temp"]["PYTEST_ADDOPTS"] == "-x -p no:cacheprovider"
