@@ -30,3 +30,5 @@ def test_waiting_for_user():
     assert live_run.waiting_for_user([ask])
     assert not live_run.waiting_for_user([ask, reply])
     assert not live_run.waiting_for_user([])
+    report = Message(id=3, sender="manager", to=["user"], content="Задача выполнена: всё влито.")
+    assert not live_run.waiting_for_user([report]), "отчёт — не вопрос, ждать ответа незачем"

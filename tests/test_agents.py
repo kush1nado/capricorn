@@ -30,7 +30,10 @@ async def test_handoff_chain(make_orch):
     ]
     assert orch.budget == orch.cfg.budget - 2      # «Принято.» без адресатов — ход возвращён
     arch = orch.agents["architect"]
-    assert arch.history[0] == {"role": "user", "content": "[от manager → architect]: @architect набросай план"}
+    first = arch.history[0]
+    assert first["role"] == "user"
+    assert first["content"].startswith("(задача пользователя") and "сделай сервис" in first["content"]
+    assert first["content"].endswith("[от manager → architect]: @architect набросай план")
     assert arch.history[1]["role"] == "assistant"
     assert arch.turns == 1 and arch.status == "idle"
     assert arch.tokens_in == 10 and arch.tokens_out == len("План готов. @manager")

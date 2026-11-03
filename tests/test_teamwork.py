@@ -78,3 +78,37 @@ def test_prompts_teach_order_of_work():
     assert "чужой работы" in coder
     native = prompt("coder1", native={"path": "/w", "write": True, "test_command": "pytest", "branch": "capricorn/coder1"})
     assert "чужой работы" in native and "SYNC" in native
+
+
+async def test_every_agent_sees_user_task_once(team):
+    """Живой прогон 2: ревьюер не видел задачу и одобрил код, сверив его с отчётом кодера."""
+    orch, _, _ = team({"manager": ["@coder1 делай CLI"], "coder1": ["Готово, @reviewer", "Поправил, @reviewer"],
+                       "reviewer": ["@coder1 нет сортировки", "APPROVED"]})
+    orch.user_says("CLI: регистр не важен, при равенстве — по алфавиту")
+    await settle(orch)
+    prov = orch.provider_for("reviewer")
+    first, second = (c.messages[-1]["content"] for c in prov.calls_for("reviewer"))
+    assert "регистр не важен" in first and "задача пользователя" in first
+    assert "регистр не важен" not in second, "та же задача второй раз не повторяется"
+    c1 = prov.calls_for("coder1")[0].messages[-1]["content"]
+    assert "регистр не важен" in c1
+    mgr = prov.calls_for("manager")[0].messages[-1]["content"]
+    assert mgr.count("регистр не важен") == 1, "менеджер получил задачу напрямую — без дубля"
+    assert orch.agents["reviewer"].task_seen == orch.task_msg.id
+    assert orch.agents["architect"].task_seen == 0, "кто не ходил — тот задачу ещё не видел"
+
+
+def test_only_manager_assigns_coders():
+    arch = prompt("architect")
+    assert "только менеджер" in arch
+    assert "только ты" in prompt("manager")
+
+
+async def test_late_agent_sees_task_and_followups(team):
+    orch, _, _ = team({"manager": ["понял", "@reviewer проверь"], "reviewer": ["ок"]})
+    orch.user_says("сделай CLI с сортировкой по алфавиту")
+    await settle(orch)
+    orch.user_says("вариант А")
+    await settle(orch)
+    to_reviewer = orch.provider_for("reviewer").calls_for("reviewer")[0].messages[-1]["content"]
+    assert "сортировкой по алфавиту" in to_reviewer and "вариант А" in to_reviewer

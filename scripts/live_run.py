@@ -52,12 +52,13 @@ def new_answers(path: Path, pos: int) -> tuple[list[str], int]:
 
 
 def waiting_for_user(messages) -> bool:
-    """Последнее сообщение — вопрос пользователю, и он ещё не ответил."""
+    """Последнее обращение к пользователю — вопрос (есть «?»), и он ещё не ответил.
+    Итоговый отчёт («задача выполнена») — не вопрос: ждать ответа на него незачем."""
     for m in reversed(messages):
         if m.sender == USER:
             return False
         if USER in m.to:
-            return True
+            return "?" in m.content
     return False
 
 

@@ -44,6 +44,7 @@ THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
 ECHO_RE = re.compile(r"\A\s*(?:\*\*)?\[от [^\]\n]*\]:?(?:\*\*)?:?\s*")
 DIRECTIVE_RE = re.compile(r"^[ \t]*(MERGE[ \t]+(\w+)|SYNC)[ \t]*$", re.M)
 BRANCH_NOTE_FILES = 15            # сколько изменённых файлов перечислять в пометке о ветке
+USER_TASKS_SHOWN = 3              # сколько последних непрочитанных реплик пользователя показать агенту
 
 
 @dataclass
@@ -87,6 +88,7 @@ class Agent:
         self.tokens_cached = 0              # входные из кэша (повтор системного промпта и истории)
         self.turns = 0
         self.compact_saved = 0              # сколько символов срезало сжатие контекста
+        self.task_seen = 0                  # id задачи пользователя, которую агент уже видел
 
     @property
     def cfg(self):
@@ -141,6 +143,15 @@ class Agent:
             overheard = compact_context(overheard, c.context_chars, c.context_messages)
             incoming = [t if m.kind in PERSONAL else collapse_code(t) for m, t in zip(batch, incoming)]
             self.compact_saved += max(0, before - sum(map(len, overheard + incoming)))
+        # задача пользователя — каждому, один раз: иначе ревьюер сверяет код с отчётом кодера, а не с требованиями
+        # (и его уточнения: «вариант А» без исходной задачи ничего не говорит)
+        task = self.orch.task_msg
+        new_task = task is not None and task.id != self.task_seen and not any(m.kind in PERSONAL for m in batch)
+        if new_task:
+            unseen = [m for m in self.orch.user_tasks() if m.id > self.task_seen and m not in batch and m not in ctx]
+            if unseen:
+                parts.append("(задача пользователя — по ней сверяй работу, отвечать на неё не нужно)\n"
+                             + "\n\n".join(m.content for m in unseen[-USER_TASKS_SHOWN:]))
         if overheard:
             parts.append("(для контекста, отвечать не нужно)\n" + "\n\n".join(overheard))
         parts.append("\n\n".join(incoming))
@@ -235,6 +246,8 @@ class Agent:
             return False
 
         self.turns += 1
+        if new_task:
+            self.task_seen = task.id
         self.history.append({"role": "assistant", "content": text})
         clean = ECHO_RE.sub("", THINK_RE.sub("", text).strip())
         kinds = {m.kind for m in batch}
@@ -301,6 +314,7 @@ class Orchestrator:
         self.session_id = self.store.new_id()
         self.created = time.time()
         self.messages = []
+        self.task_msg: Message | None = None       # последняя задача пользователя команде — видна всем агентам
         self.log_path = self.store.dir(self.session_id) / "log.jsonl"
 
     def snapshot(self) -> dict:
@@ -310,10 +324,12 @@ class Orchestrator:
             "budget": self.budget, "complex_mode": self.cfg.complex_mode,
             "models": {n: a.model for n, a in self.cfg.agents.items()},
             "messages": [asdict(m) for m in self.messages],
+            "task": self.task_msg.id if self.task_msg else 0,
             "agents": {n: {"history": a.history, "pending": [asdict(m) for m in a.pending],
                            "context": [asdict(m) for m in a.context], "tokens_in": a.tokens_in,
                            "tokens_cached": a.tokens_cached,
-                           "tokens_out": a.tokens_out, "turns": a.turns, "compact_saved": a.compact_saved}
+                           "tokens_out": a.tokens_out, "turns": a.turns, "compact_saved": a.compact_saved,
+                           "task_seen": a.task_seen}
                        for n, a in self.agents.items()},
             "cli_sessions": {name: dict(p.sessions) for name, p in self.providers.items() if hasattr(p, "sessions")},
         }
@@ -336,6 +352,7 @@ class Orchestrator:
         self.created = state.get("created") or time.time()
         self.log_path = self.store.dir(self.session_id) / "log.jsonl"
         self.messages = [Message(**m) for m in state.get("messages") or []]
+        self.task_msg = next((m for m in self.messages if m.id == state.get("task")), None)
         self.budget = int(state.get("budget", self.cfg.budget))
         self.cfg.complex_mode = bool(state.get("complex_mode", self.cfg.complex_mode))
         for name, model in (state.get("models") or {}).items():
@@ -355,6 +372,7 @@ class Orchestrator:
             a.tokens_in, a.tokens_out, a.turns = st.get("tokens_in", 0), st.get("tokens_out", 0), st.get("turns", 0)
             a.tokens_cached = st.get("tokens_cached", 0)
             a.compact_saved = st.get("compact_saved", 0)
+            a.task_seen = st.get("task_seen", 0)
             a.status = "idle"
         for pname, sessions in (state.get("cli_sessions") or {}).items():
             p = self.providers.get(pname)
@@ -424,6 +442,9 @@ class Orchestrator:
                 agent.context.append(msg)
         return msg
 
+    def user_tasks(self) -> list[Message]:
+        return [m for m in self.messages if m.sender == USER and m.kind == "team"]
+
     def user_says(self, text: str) -> Message:
         if self.attachments:
             text += "\n\n" + "\n\n".join(self.attachments)
@@ -431,6 +452,7 @@ class Orchestrator:
         self.budget = max(self.budget, self.cfg.budget)
         self._budget_warned = False
         msg = self.route(USER, text)
+        self.task_msg = msg
         self.save()
         return msg
 
