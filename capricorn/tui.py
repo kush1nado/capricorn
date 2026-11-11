@@ -48,7 +48,7 @@ SPIN = "░▒▓█▓▒"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
 PANEL_NAMES = {**ROLE_TITLES, "git": "Git", "feed": "Лента"}
-ACTIVE = ("thinking", "typing", "working")     # working — агент выполняет инструмент
+ACTIVE = ("thinking", "typing", "working", "testing")  # working — инструмент; testing — тесты для ревью
 
 HELP = """\
 [b]Ввод[/b]: текст → менеджеру; [#00e5ff]@architect @reviewer текст[/] → адресно; @coders, @all.

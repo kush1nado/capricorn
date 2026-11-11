@@ -20,7 +20,7 @@ from .config import Config
 from .gitinfo import GitWatcher
 from .prompts import system_prompt
 from .providers import Provider, ProviderError, build_providers
-from .tools import Toolbox
+from .tools import Toolbox, run_tests_in
 from .sessions import VERSION as SESSION_VERSION
 from .sessions import SessionStore
 from .worktrees import Outcome, is_writer
@@ -258,12 +258,16 @@ class Agent:
             msg = self.orch.deliver(Message(id=msg_id, sender=self.name, to=[USER], content=clean, kind="private"),
                                     emit_message=False)
         else:
-            if self.orch.parse_targets(self.name, clean):     # адресатам — где лежит работа пишущего агента
-                clean += await self.orch.branch_note(self.name)
+            targets = self.orch.parse_targets(self.name, clean)
+            if targets:                                       # адресатам — где лежит работа пишущего агента
+                if "reviewer" in targets:
+                    self.set_status("testing")
+                clean += await self.orch.branch_note(self.name, run_tests="reviewer" in targets)
             msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
             if (not any(n in self.orch.agents for n in msg.to)
                     and not DIRECTIVE_RE.search(CODE_RE.sub("", clean))):
                 self.orch.budget += 1     # ответ никого не будит — цепочку не продолжит, бюджет не тратит
+            self._drop_crossed(msg_id, msg.to)
         self.orch.emit("stream_end", agent=self.name, msg_id=msg_id, text=display, to=msg.to)
         self.orch.emit("message", msg=msg)
         self.set_status("idle")
@@ -271,6 +275,17 @@ class Agent:
             await self.orch.run_directives(self.name, clean)
         self.orch.save()
         return True
+
+    def _drop_crossed(self, reply_id: int, replied_to: list[str]):
+        """Менеджер написал агенту, пока тот уже отвечал менеджеру: сообщения разминулись, и новый ход
+        повторил бы сделанное (живые прогоны: второе одинаковое ревью). Оставляем их контекстом — агент
+        увидит их в следующем ходе, а менеджер, получив ответ, напишет заново, если что-то нужно."""
+        if "manager" not in replied_to:
+            return
+        crossed = [m for m in self.pending if m.id > reply_id and m.sender == "manager" and m.kind == "team"]
+        if crossed:
+            self.pending = [m for m in self.pending if m not in crossed]
+            self.context += crossed
 
     def _trim(self):
         limit = self.orch.cfg.max_history
@@ -584,9 +599,10 @@ class Orchestrator:
                 pass
         return out
 
-    async def branch_note(self, agent: str) -> str:
+    async def branch_note(self, agent: str, run_tests: bool = False) -> str:
         """Пометка к сообщению пишущего агента: его ветка, worktree и изменённые файлы. Без неё ревьюер
-        не знает, где искать код (живой прогон: «покажи, где файлы» — и ход впустую)."""
+        не знает, где искать код (живой прогон: «покажи, где файлы» — и ход впустую).
+        run_tests — прогнать test_command в его ветке здесь, вне песочницы: ревьюер на CLI тестов не запустит."""
         wts = self.toolbox.worktrees
         if not (is_writer(agent) and wts.active):
             return ""
@@ -605,7 +621,23 @@ class Orchestrator:
         files = [f"{marks.get(s, '±')} {p}" for s, p in changes[:BRANCH_NOTE_FILES]]
         if len(changes) > BRANCH_NOTE_FILES:
             files.append(f"… ещё {len(changes) - BRANCH_NOTE_FILES}")
-        return f"\n\n[ветка {wts.branch(agent)} · worktree {where} · изменено: {', '.join(files)}]"
+        tests = await self.test_summary(agent) if run_tests else ""
+        return f"\n\n[ветка {wts.branch(agent)} · worktree {where} · изменено: {', '.join(files)}{tests}]"
+
+    async def test_summary(self, agent: str) -> str:
+        """« · тесты: <последняя строка вывода> (код N)» — или пусто, если тесты выключены."""
+        tc = self.cfg.tools
+        if not (tc.enabled and tc.run_tests):
+            return ""
+        try:
+            ws = await self.toolbox.workspace_for(agent, None)
+            res = await run_tests_in(ws)
+        except Exception as e:  # noqa: BLE001 — сломанные тесты не должны ронять ход
+            return f" · тесты: не запустились — {str(e)[:200]}"
+        lines = [s.strip() for s in res.content.splitlines() if s.strip()]
+        code = res.summary.rsplit(" ", 1)[-1]
+        last = lines[-1] if len(lines) > 2 else "без вывода"
+        return f" · тесты: {last[:200]} (код {code})"
 
     async def ask_once(self, agent: str, system: str, prompt: str) -> str:
         """Разовый вопрос агенту вне диалога команды: его история и CLI-сессия не трогаются,

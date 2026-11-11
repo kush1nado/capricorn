@@ -396,6 +396,11 @@ async def _run_tests(tb: Toolbox, a: dict) -> ToolResult:
                       summary=f"код выхода {rc}")
 
 
+async def run_tests_in(tb: Workspace) -> ToolResult:
+    """test_command в корне рабочей папки (worktree агента) — для оркестратора, без модели."""
+    return await _run_tests(tb, {})
+
+
 TOOLS: dict[str, ToolSpec] = {s.name: s for s in [
     ToolSpec("list_files", "Список файлов репозитория (учитывает .gitignore).", _schema({
         "path": {"type": "string", "description": "каталог относительно корня, по умолчанию весь репозиторий"},

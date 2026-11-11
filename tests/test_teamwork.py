@@ -136,3 +136,60 @@ def test_approved_detection():
     assert APPROVED_RE.search("APPROVED, замечаний нет")
     assert not APPROVED_RE.search("Пока не APPROVED: нет тестов")
     assert not APPROVED_RE.search("NOT APPROVED")
+
+
+async def test_review_request_carries_test_result_run_on_host(team):
+    """Ревьюер на CLI не может запускать тесты: их прогоняет оркестратор в ветке кодера, без токенов."""
+    import sys
+    orch, events, _ = team({"coder1": ["Готово, @reviewer", "Вопрос, @architect"], "reviewer": ["ок"],
+                            "architect": ["ок"]})
+    orch.cfg.tools.test_command = [sys.executable, "-c", "print('collected 3 items'); print('3 passed in 0.1s')"]
+    await orch.toolbox.run("coder1", "write_file", {"path": "f.py", "content": "x = 1\n"})
+    orch.route("manager", "@coder1 сделай")
+    await settle(orch)
+    review = next(m for m in messages(events) if m.sender == "coder1")
+    assert "тесты: 3 passed in 0.1s (код 0)" in review.content
+    orch.route("manager", "@coder1 спроси архитектора")
+    await settle(orch)
+    question = [m for m in messages(events) if m.sender == "coder1"][-1]
+    assert "тесты:" not in question.content, "тесты гоняем только для ревью"
+
+
+async def test_no_test_run_when_tests_disabled(team):
+    orch, events, _ = team({"coder1": ["Готово, @reviewer"], "reviewer": ["ок"]})
+    orch.cfg.tools.run_tests = False
+    await orch.toolbox.run("coder1", "write_file", {"path": "f.py", "content": "x = 1\n"})
+    orch.route("manager", "@coder1 сделай")
+    await settle(orch)
+    assert "тесты:" not in next(m for m in messages(events) if m.sender == "coder1").content
+
+
+async def test_manager_message_crossing_a_reply_does_not_wake_again(team):
+    """Живые прогоны: менеджер пишет агенту, пока тот уже отвечает ему же, — и агент делает лишний ход."""
+    orch_box = {}
+
+    async def reviewing(agent, incoming):
+        orch_box["o"].route("manager", "@reviewer проверь, пожалуйста")     # пришло, пока ревьюер занят
+        return "APPROVED @manager"
+
+    orch, events, _ = team({"reviewer": [reviewing, "лишний ход"], "manager": ["ок"]})
+    orch_box["o"] = orch
+    orch.route("coder1", "@reviewer готово")
+    await settle(orch)
+    rev = orch.agents["reviewer"]
+    assert rev.turns == 1 and not rev.pending
+    assert any("проверь, пожалуйста" in m.content for m in rev.context), "не потеряно — видно как контекст"
+
+
+async def test_crossing_message_from_others_still_wakes(team):
+    box = {}
+
+    async def coding(agent, incoming):
+        box["o"].route("reviewer", "@coder1 ещё замечание")
+        return "сделал @manager"
+
+    orch, _, _ = team({"coder1": [coding, "учёл замечание"], "manager": ["ок"]})
+    box["o"] = orch
+    orch.route("manager", "@coder1 сделай")
+    await settle(orch)
+    assert orch.agents["coder1"].turns == 2, "замечание ревьюера — новое дело, его не глотаем"
