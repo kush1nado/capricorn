@@ -90,4 +90,6 @@ agents:
   tester:
     model: minimax/MiniMax-M2
   # Любой агент: max_tokens, temperature, extra_prompt (дописывается к системному промпту),
-  # tools: [read_file, git_diff] — свой набор инструментов вместо набора по роли
+  # tools: [read_file, git_diff] — свой набор инструментов вместо набора по роли.
+  # Свои роли (security, dba …) описывай в .capricorn/team.yaml проекта (см. README, «Своя команда»);
+  # модель для них — здесь же: security: {model: anthropic/claude-sonnet-5-5}

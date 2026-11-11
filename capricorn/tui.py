@@ -1,6 +1,7 @@
 """Терминальный интерфейс на Textual: сетка панелей агентов + git + общая лента + ввод."""
 from __future__ import annotations
 
+import copy
 import shlex
 import time
 from pathlib import Path
@@ -23,11 +24,10 @@ from . import start
 from .config import Config, load_config
 from .gitinfo import GitSnapshot
 from .orchestrator import USER, Message, Orchestrator
-from .prompts import ROLE_TITLES
 from .sessions import SessionStore, to_markdown
 from .terminal import install_key_fixes, install_web_input_fix
+from .team import TeamError, apply_team, load_team, title_of
 from .usage import k, usage_report
-from .worktrees import is_writer
 
 install_key_fixes()       # alt+цифры и alt+space иначе не доходят (см. terminal.py)
 install_web_input_fix()   # Windows: иначе Esc в окне/браузере срабатывает только со следующей клавишей
@@ -43,11 +43,21 @@ COLORS = {
     "coder3": "#b26bff", "reviewer": "#ff7a00", "tester": "#f5d300", USER: f"bold {BONE}",
     "system": STEEL,
 }
+DEFAULT_COLOR_NAMES = set(COLORS)
+EXTRA_COLORS = ["#39ff14", "#40e0d0", "#ff69b4", "#c8a96e", "#87cefa", "#dda0dd", "#ffa07a", "#9acd32"]
 CODE_THEME = "fruity"
 SPIN = "░▒▓█▓▒"
 PANEL_ORDER = ["git", "architect", "manager", "coder1", "coder2", "coder3", "reviewer", "tester", "feed"]
 MAX_ITEMS = 150
-PANEL_NAMES = {**ROLE_TITLES, "git": "Git", "feed": "Лента"}
+PANEL_NAMES = {"git": "Git", "feed": "Лента"}
+
+
+def color_for(name: str) -> str:
+    """Цвет агента: у стандартных — свой, новым ролям — по очереди из запасной палитры."""
+    if name not in COLORS:
+        used = len([n for n in COLORS if n not in DEFAULT_COLOR_NAMES])
+        COLORS[name] = EXTRA_COLORS[used % len(EXTRA_COLORS)]
+    return COLORS[name].replace("bold ", "")
 ACTIVE = ("thinking", "typing", "working", "testing")  # working — инструмент; testing — тесты для ревью
 
 HELP = """\
@@ -56,6 +66,8 @@ HELP = """\
   /pause /resume /stop          — пауза, продолжить, прервать всех
   /continue [N]                 — добавить N ходов (по умолч. 15)
   /complex on|off               — третий кодер
+  /team                         — состав команды: роли, типы, описания, скиллы
+  /off <агент>  /on <агент>     — выключить роль на текущую задачу (до /new) и вернуть
   /model <агент> <пров/модель>  — сменить модель на лету;  /models — список
   /retry <агент>  /reset [агент] — повтор после ошибки, очистка памяти
   /attach <путь>                — приложить файл к следующему сообщению
@@ -134,9 +146,9 @@ class LogPanel(VerticalScroll):
 
 
 class AgentPanel(LogPanel):
-    def __init__(self, key: str, index: int, wid: str | None = None):
-        super().__init__(key, ROLE_TITLES[key], index, wid)
-        self.styles.border_title_color = COLORS[key].replace("bold ", "")
+    def __init__(self, key: str, index: int, wid: str | None = None, title: str | None = None):
+        super().__init__(key, title or title_of(None, key), index, wid)
+        self.styles.border_title_color = color_for(key)
         self.streams: dict[int, tuple[Item, str]] = {}
         self.dirty: set[int] = set()
         self.status = "idle"
@@ -366,6 +378,8 @@ class StartScreen(ModalScreen[dict]):
         self.available = start.available_models(cfg)
         self.preset_map: dict[str, dict[str, str]] = {}
         self.latest_session: str | None = None
+        self.role_names: list[str] = []
+        self.kinds: dict[str, str] = {}
         self.ready = False              # Input.Changed приходит ещё при монтировании — до готовности не реагируем
 
     def compose(self) -> ComposeResult:
@@ -383,11 +397,7 @@ class StartScreen(ModalScreen[dict]):
                     yield OptionList(*recent, id="recent")
                 yield Label("МОДЕЛИ АГЕНТОВ", classes="caption")
                 yield Horizontal(id="presets")
-                with Container(id="roles"):
-                    options = [(label, model) for label, model in self.available]
-                    for role in self.cfg.agents:
-                        yield Label(ROLE_TITLES.get(role, role))
-                        yield Select(options, id=f"model-{role}", allow_blank=False, value=options[-1][1])
+                yield Container(id="roles")
                 yield Label("СЕССИЯ", classes="caption")
                 with RadioSet(id="session"):
                     yield RadioButton("новая", value=True, id="new-session")
@@ -413,7 +423,11 @@ class StartScreen(ModalScreen[dict]):
             warn.update("▲ такой папки нет")
             return
         warn.update("")
-        cfg = self.cfg if self.config_path else load_config(base=path)
+        cfg = copy.deepcopy(self.cfg) if self.config_path else load_config(base=path)
+        try:
+            apply_team(cfg, load_team(path))
+        except TeamError as e:
+            warn.update(f"▲ {e}")
         self.available = start.available_models(cfg)
         self.preset_map = start.presets(cfg, self.available)
         bar = self.query_one("#presets", Horizontal)
@@ -422,11 +436,17 @@ class StartScreen(ModalScreen[dict]):
         saved = start.load_project_settings(path).get("models") or {}
         options = [(label, model) for label, model in self.available]
         have = {m for _, m in options}
+        roles = self.query_one("#roles", Container)
+        await roles.remove_children()
+        self.role_names = list(cfg.agents)
+        self.kinds = {n: a.kind for n, a in cfg.agents.items()}
+        widgets = []
         for role, agent in cfg.agents.items():
-            sel = self.query_one(f"#model-{role}", Select)
-            sel.set_options(options)
             want = saved.get(role) or agent.model
-            sel.value = want if want in have else "mock/mock"
+            widgets += [Label(title_of(cfg, role) + ("" if agent.enabled else " (не в составе)")),
+                        Select(options, id=f"model-{role}", allow_blank=False,
+                               value=want if want in have else "mock/mock")]
+        await roles.mount_all(widgets)
         self.latest_session = SessionStore(path).latest()
         resume = self.query_one("#resume-session", RadioButton)
         if self.latest_session:
@@ -470,12 +490,13 @@ class StartScreen(ModalScreen[dict]):
         elif bid.startswith("preset-"):
             models = list(self.preset_map.values())[int(bid.split("-", 1)[1])]
             have = {m for _, m in self.available}
-            for role, model in models.items():
+            for role in self.role_names:
+                model = models.get(role) or models.get(start.preset_key(role, self.kinds.get(role)))
                 if model in have:
                     self.query_one(f"#model-{role}", Select).value = model
 
     def chosen_models(self) -> dict[str, str]:
-        return {role: self.query_one(f"#model-{role}", Select).value for role in self.cfg.agents}
+        return {role: self.query_one(f"#model-{role}", Select).value for role in self.role_names}
 
     def go(self):
         path = self.project_path()
@@ -504,15 +525,17 @@ class FocusScreen(ModalScreen[None]):
     def __init__(self, agent: str):
         super().__init__()
         self.agent = agent
-        self.panel = AgentPanel(agent, PANEL_ORDER.index(agent) + 1, wid=f"f-{agent}")
+        self.panel = AgentPanel(agent, 0, wid=f"f-{agent}")
 
     def compose(self) -> ComposeResult:
-        title = ROLE_TITLES[self.agent].upper()
+        name = title_of(self.app.cfg, self.agent)
+        self.panel.border_title = f"▓ {self.app.panel_order.index(self.agent) + 1:02d} // {name.upper()}"
+        title = name.upper()
         with Vertical():
             yield Static(f"▓ {title} // ЛИЧНЫЙ КАНАЛ ┃ видишь только ты ┃ esc — закрыть, итог уйдёт команде",
                          id="focus-title")
             yield self.panel
-            yield PromptInput(id="focus-input", placeholder=f"▸ лично для: {ROLE_TITLES[self.agent]}…")
+            yield PromptInput(id="focus-input", placeholder=f"▸ лично для: {name}…")
 
     def on_mount(self):
         a = self.app.orch.agents[self.agent]
@@ -667,7 +690,11 @@ class ConflictScreen(ModalScreen[bool]):
     ConflictScreen .side.chosen { border: heavy #39ff14; border-title-color: #39ff14; }
     ConflictScreen #cx-msg { height: 1; padding: 0 1; }
     """
-    AGENTS = ("architect", "coder1", "reviewer", "coder2", "manager", "tester", "coder3")
+    KIND_ORDER = ("architect", "coder", "reviewer", "manager", "tester", "expert")   # кого спрашивать первым
+
+    def agents(self) -> list[str]:
+        o = self.app.orch
+        return sorted(o.roster, key=lambda n: self.KIND_ORDER.index(o.cfg.kind_of(n)))
 
     def __init__(self, path: str):
         super().__init__()
@@ -693,7 +720,7 @@ class ConflictScreen(ModalScreen[bool]):
                          id="cx-keys")
 
     def on_mount(self):
-        names = [a for a in self.AGENTS if a in self.app.orch.agents] or list(self.app.orch.agents)
+        names = self.agents() or list(self.app.orch.agents)
         self.agent = names[0] if names else ""
         try:
             self.cf = cx.parse(self.git.read_text(self.path))
@@ -774,7 +801,7 @@ class ConflictScreen(ModalScreen[bool]):
         self.render_hunk()
 
     def action_next_agent(self):
-        names = [a for a in self.AGENTS if a in self.app.orch.agents]
+        names = self.agents()
         if names:
             self.agent = names[(names.index(self.agent) + 1) % len(names)] if self.agent in names else names[0]
             self.render_hunk()
@@ -1246,6 +1273,7 @@ class CapricornApp(App):
     }
     .panel.active { border: solid #ff1a3c; border-subtitle-color: #ff1a3c; }
     .panel.failed { border: double #ff1a3c; }
+    .panel.off { border: dashed #3d0710; opacity: 50%; }
     .panel:focus, .panel:focus-within { border: heavy #ff1a3c; background: #0c0607; }
     .panel.selected { border: heavy #ff1a3c; border-title-background: #2a0309; }
     /* в окнах: CSS приложения сильнее DEFAULT_CSS экранов, поэтому правила для .panel — здесь */
@@ -1307,26 +1335,20 @@ class CapricornApp(App):
     def compose(self) -> ComposeResult:
         yield Static(BANNER, id="banner")
         with Container(id="grid"):
-            for i, key in enumerate(PANEL_ORDER, 1):
-                if key == "git":
-                    yield GitPanel(i)
-                elif key == "feed":
-                    yield FeedPanel("feed", "Лента команды", i)
-                else:
-                    p = AgentPanel(key, i)
-                    self.panels[key] = p
-                    yield p
+            yield GitPanel(1)
+            yield from self.make_panels()
+            yield FeedPanel("feed", "Лента команды", len(self.cfg.agents) + 2)
         yield Static(id="status")
         yield PromptInput(id="prompt", placeholder="▸ задача для команды… @agent — адресно · /help — команды")
 
     # ---------------------------------------------------------- lifecycle
-    def on_mount(self):
+    async def on_mount(self):
         self.register_theme(CAPRICORN_THEME)
         self.theme = "capricorn"
         if self.setup:
             self.push_screen(StartScreen(self.cfg, self.repo, self.config_path), self._setup_done)
         else:
-            self.start_team()
+            await self.start_team()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Пока открыт стартовый экран, команды нет — alt-клавиши приложения не срабатывают."""
@@ -1334,7 +1356,7 @@ class CapricornApp(App):
             return False
         return True
 
-    def _setup_done(self, choice: dict | None):
+    async def _setup_done(self, choice: dict | None):
         if not choice:
             return
         self.repo = choice["repo"]
@@ -1344,10 +1366,31 @@ class CapricornApp(App):
         start.save_project_settings(self.repo, {"models": choice["models"]})
         start.remember_project(self.repo)
         self.resume = choice["resume"]
-        self.start_team()
+        await self.start_team()
 
-    def start_team(self):
+    @property
+    def panel_order(self) -> list[str]:
+        return ["git", *self.panels, "feed"]
+
+    def make_panels(self) -> list[AgentPanel]:
+        self.panels = {key: AgentPanel(key, i, title=title_of(self.cfg, key))
+                       for i, key in enumerate(self.cfg.agents, 2)}
+        return list(self.panels.values())
+
+    async def rebuild_panels(self):
+        """Состав команды поменялся (team.yaml, окно /team): панели агентов собираются заново."""
+        for p in list(self.panels.values()):
+            await p.remove()
+        await self.query_one("#grid").mount_all(self.make_panels(), before=self.feed)
+        self.feed.index = len(self.panels) + 2
+        self.feed.border_title = f"▓ {self.feed.index:02d} // ЛЕНТА КОМАНДЫ"
+        if self.selected not in self.panel_order:
+            self.selected = self.orch.default_target if self.orch else "feed"
+
+    async def start_team(self):
         self.orch = Orchestrator(self.cfg, self.repo, self.handle_orch_event)
+        if list(self.panels) != list(self.cfg.agents):
+            await self.rebuild_panels()
         previous = self.orch.store.latest()
         restored = None
         if self.resume and previous:
@@ -1356,6 +1399,8 @@ class CapricornApp(App):
         self.orch.toolbox.worktrees.on_conflict = self.merge_conflict
         self.orch.start()
         self.feed.system(f"▓ CAPRICORN ONLINE ┃ конфиг: {self.cfg.source} ┃ репо: {self.repo}")
+        if self.orch.team_error:
+            self.feed.system(f"▲ {self.orch.team_error}. Работает команда по умолчанию", "error")
         if restored:
             self.replay()
             for w in warnings:
@@ -1373,7 +1418,9 @@ class CapricornApp(App):
 
     def sync_meta(self):
         for name, p in self.panels.items():
-            a = self.orch.agents[name]
+            a = self.orch.agents.get(name)
+            if a is None:
+                continue
             p.set_meta(model=self.cfg.agents[name].model, status=a.status, tok=(a.tokens_in, a.tokens_out, a.tokens_cached))
         self.apply_layout()
         self.select(self.selected)
@@ -1395,11 +1442,17 @@ class CapricornApp(App):
         return self.query_one("#p-feed", FeedPanel)
 
     def apply_layout(self):
-        on = self.cfg.complex_mode
-        self.panels["coder3"].display = on
-        self.feed.styles.column_span = 1 if on else 2
-        if not on and self.selected == "coder3":
-            self.select("manager")
+        """Панели тех, кто в составе; выключенные на задачу (/off) — приглушены. Лента добирает строку сетки."""
+        for name, p in self.panels.items():
+            p.display = self.cfg.agents[name].enabled if name in self.cfg.agents else False
+            off = self.orch is not None and name in self.orch.off
+            p.set_class(off, "off")
+        visible = len(self.visible_panels())
+        rows = max(1, -(-visible // 3))
+        self.query_one("#grid").styles.grid_size_rows = rows
+        self.feed.styles.column_span = 3 * rows - visible + 1
+        if self.selected not in self.visible_panels():
+            self.select(self.orch.default_target if self.orch else "feed")
 
     @work(exclusive=True, group="git")
     async def refresh_git(self):
@@ -1427,13 +1480,13 @@ class CapricornApp(App):
         else:
             state = f"[{STEEL}]▫ STANDBY[/]"
         att = f" ┃ ФАЙЛЫ {len(o.attachments)}" if o.attachments else ""
-        mode = "COMPLEX ×3" if self.cfg.complex_mode else "STANDARD"
+        mode = f"{len(o.roster)} АГЕНТОВ" + (f" [{STEEL}]выкл: {', '.join(sorted(o.off))}[/]" if o.off else "")
         sep = f" [{RED_DIM}]┃[/] "
         status.update(
-            f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}РЕЖИМ [{BONE}]{mode}[/]{sep}"
+            f"{state}{sep}ХОДЫ [{BONE}]{o.budget}[/]{sep}СОСТАВ [{BONE}]{mode}[/]{sep}"
             f"ТОКЕНЫ [{BONE}]{k(tin)}↑ {k(tout)}↓[/]" + (f" [{STEEL}]кэш {k(tcache)}[/]" if tcache else "")
             + f"{att}{sep}"
-            f"[{STEEL}]alt+space → [{BONE}]{PANEL_NAMES.get(self.selected, self.selected)}[/] · клик/alt+1..9 — выбор · alt+g git · alt+h справка[/]")
+            f"[{STEEL}]alt+space → [{BONE}]{PANEL_NAMES.get(self.selected) or title_of(self.cfg, self.selected)}[/] · клик/alt+1..9 — выбор · alt+g git · alt+h справка[/]")
 
     # ------------------------------------------------------ orchestrator
     def show_message(self, msg: Message, live: bool = True):
@@ -1508,6 +1561,17 @@ class CapricornApp(App):
             self.feed.system(f"▲ {w}", "warn")
         self.feed.system(f"► открыта сессия {sid}. /continue — доделать очередь")
 
+    def team_summary(self) -> str:
+        lines = []
+        for n, a in self.cfg.agents.items():
+            state = "не в составе" if not a.enabled else ("выкл. на задаче" if n in self.orch.off else "")
+            mark = "▸" if n in self.orch.roster else "·"
+            extra = [x for x in (a.description, f"скиллы: {', '.join(a.skills)}" if a.skills else "",
+                                 "свой промпт" if a.prompt else "", state) if x]
+            lines.append(f"{mark} {n:10} {a.kind:9} {title_of(self.cfg, n)}" + (f" — {'; '.join(extra)}" if extra else ""))
+        lines.append("состав проекта: .capricorn/team.yaml, скиллы: .capricorn/skills/*.md")
+        return "\n".join(lines)
+
     def _agent(self, name: str) -> str:
         if name not in self.orch.agents:
             raise ValueError(f"нет агента «{name}». Есть: {', '.join(self.orch.agents)}")
@@ -1534,6 +1598,14 @@ class CapricornApp(App):
             on = (args[0].lower() in ("on", "1", "да", "yes")) if args else not self.cfg.complex_mode
             o.set_complex(on); self.apply_layout()
             self.feed.system(f"режим: {'сложный — подключён coder3' if on else 'обычный'}")
+        elif cmd in ("off", "on"):
+            name = self._agent(args[0])
+            o.set_off(name, cmd == "off")
+            self.apply_layout()
+            self.feed.system(f"{title_of(self.cfg, name)} ({name}) " +
+                             ("выключен на эту задачу — /on вернёт" if cmd == "off" else "снова в команде"))
+        elif cmd == "team":
+            self.feed.system(self.team_summary())
         elif cmd == "model":
             name = self._agent(args[0]); o.set_model(name, args[1])
             self.panels[name].set_meta(model=args[1]); self.feed.system(f"{name} → {args[1]}")
@@ -1713,13 +1785,13 @@ class CapricornApp(App):
 
     # ------------------------------------------------- выбор панели и окна
     def visible_panels(self) -> list[str]:
-        return [k for k in PANEL_ORDER if k != "coder3" or self.cfg.complex_mode]
+        return [k for k in self.panel_order if k not in self.cfg.agents or self.cfg.agents[k].enabled]
 
     def select(self, key: str):
         if key not in self.visible_panels():
             return
         self.selected = key
-        for k in PANEL_ORDER:
+        for k in self.panel_order:
             self.query_one(f"#p-{k}").set_class(k == key, "selected")
         focused = self.focused
         if getattr(focused, "key", key) != key and focused in self.screen_stack[0].query(".panel"):
@@ -1728,13 +1800,16 @@ class CapricornApp(App):
             self.update_status()            # подсказка «alt+space → …» меняется сразу
 
     def action_select_index(self, i: int):
-        self.select(PANEL_ORDER[i - 1])
+        order = self.panel_order
+        if i <= len(order):
+            self.select(order[i - 1])
 
     def grid_cells(self) -> dict[tuple[int, int], str]:
-        """Клетки сетки 3×3, как они видны на экране: скрытый coder3 сдвигает панели, лента — на две клетки."""
+        """Клетки сетки, как они видны на экране: скрытые панели сдвигают остальные, лента добирает строку."""
         cells, pos = {}, 0
-        for key in self.visible_panels():
-            span = 2 if key == "feed" and not self.cfg.complex_mode else 1
+        visible = self.visible_panels()
+        for key in visible:
+            span = int(self.feed.styles.column_span or 1) if key == "feed" else 1
             for s in range(span):
                 cells[divmod(pos + s, 3)] = key
             pos += span
@@ -1782,7 +1857,7 @@ class CapricornApp(App):
             self.open_diff(self.selected)
 
     def open_diff(self, agent: str):
-        if not is_writer(agent):
+        if not self.cfg.is_writer(agent):
             self.feed.system("diff есть у кодеров и тестировщика: выбери их панель (alt+цифра) или /diff coder1")
         elif not self.orch.toolbox.worktrees.active:
             self.feed.system("worktree выключены — у агентов нет своих веток")
@@ -1798,7 +1873,7 @@ class CapricornApp(App):
     def _focus_closed(self, _result=None):
         agent, self.focus_agent, self.focus_screen = self.focus_agent, None, None
         if agent and self.orch.end_private(agent):
-            self.feed.system(f"► {ROLE_TITLES[agent]} подводит итог разговора — он уйдёт команде")
+            self.feed.system(f"► {title_of(self.cfg, agent)} подводит итог разговора — он уйдёт команде")
         self.query_one("#prompt").focus()
 
     def action_slash(self, line: str):

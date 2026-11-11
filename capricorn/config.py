@@ -32,7 +32,18 @@ class AgentConfig:
     observe_all: bool = False
     compact: bool = False               # код свёрнут, подслушанное и старая история ужаты
     extra_prompt: str = ""
-    tools: list[str] | None = None      # None — набор по роли (tools.ROLE_TOOLS)
+    tools: list[str] | None = None      # None — набор по типу роли (tools.ROLE_TOOLS)
+    kind: str = ""                      # тип роли (team.KINDS); пусто — по имени
+    title: str = ""
+    description: str = ""
+    prompt: str = ""                    # свой промпт вместо стандартного для типа
+    skills: list[str] = field(default_factory=list)
+    enabled: bool = True                # в составе команды
+
+    def __post_init__(self):
+        if not self.kind:
+            from .team import default_kind
+            self.kind = default_kind(self.name)
 
     @property
     def provider(self) -> str:
@@ -62,12 +73,35 @@ class Config:
     max_history: int = 40
     context_chars: int = 400            # сжатый контекст: длина одного подслушанного сообщения
     context_messages: int = 12          # и сколько последних подслушанных сообщений видно
-    complex_mode: bool = False
+    complex_flag: bool = False          # coder3 в составе (режим «сложно»), если coder3 нет в команде
     providers: dict = field(default_factory=lambda: {"mock": {"type": "mock"}})
     agents: dict[str, AgentConfig] = field(default_factory=dict)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     prices: dict[str, tuple[float, float, float]] = field(default_factory=dict)  # $ за 1M: вход, кэш, выход
     source: str = "defaults"
+
+    @property
+    def complex_mode(self) -> bool:
+        """Третий кодер в составе. Хранится во флаге enabled у coder3."""
+        a = self.agents.get("coder3")
+        return a.enabled if a is not None else self.complex_flag
+
+    @complex_mode.setter
+    def complex_mode(self, on: bool):
+        self.complex_flag = bool(on)
+        if "coder3" in self.agents:
+            self.agents["coder3"].enabled = bool(on)
+
+    def kind_of(self, name: str) -> str:
+        a = self.agents.get(name)
+        if a is not None:
+            return a.kind
+        from .team import default_kind
+        return default_kind(name)
+
+    def is_writer(self, name: str) -> bool:
+        from .team import WRITER_KINDS
+        return name in self.agents and self.kind_of(name) in WRITER_KINDS
 
 
 CANDIDATES = [
@@ -103,7 +137,6 @@ def load_config(path: str | None = None, force_mock: bool = False, base: str | P
         max_history=int(raw.get("max_history", 40)),
         context_chars=int(raw.get("context_chars", 400)),
         context_messages=int(raw.get("context_messages", 12)),
-        complex_mode=bool(raw.get("complex_mode", False)),
         providers=raw.get("providers") or {"mock": {"type": "mock"}},
         source=source,
     )
@@ -124,20 +157,29 @@ def load_config(path: str | None = None, force_mock: bool = False, base: str | P
         worktrees=bool(t.get("worktrees", True)),
     )
 
+    from .team import check_name, parse_role
     agents_raw = raw.get("agents") or {}
-    for role in ROLES:
+    extra = [str(n) for n in agents_raw if n not in ROLES]
+    for name in extra:
+        check_name(name)
+    for role in [*ROLES, *extra]:
         a = agents_raw.get(role) or {}
+        r = parse_role(role, {k: a[k] for k in ("kind", "title", "description", "prompt", "skills") if k in a})
         ac = AgentConfig(
             name=role,
             model=a.get("model", "mock/mock"),
             temperature=float(a.get("temperature", 0.5)),
             max_tokens=int(a.get("max_tokens", 4096)),
-            observe_all=bool(a.get("observe_all", role == "manager")),
-            compact=bool(a.get("compact", role == "manager")),
+            observe_all=bool(a.get("observe_all", r.kind == "manager")),
+            compact=bool(a.get("compact", r.kind == "manager")),
             extra_prompt=a.get("extra_prompt", ""),
             tools=list(a["tools"]) if a.get("tools") is not None else None,
+            kind=r.kind, title=r.title, description=r.description, prompt=r.prompt, skills=r.skills,
+            enabled=bool(a.get("enabled", role != "coder3")),
         )
         if force_mock:
             ac.model = f"mock/{role}"
         cfg.agents[role] = ac
+    if raw.get("complex_mode"):
+        cfg.complex_mode = True
     return cfg

@@ -1,14 +1,11 @@
-"""Системные промпты ролей и протокол общения."""
+"""Системные промпты ролей и протокол общения. Промпт выбирается по типу роли (team.KINDS),
+а не по имени агента: @security с типом reviewer получает промпт ревьюера."""
+import re
 
-ROLE_TITLES = {
-    "architect": "Архитектор",
-    "manager": "Менеджер",
-    "coder1": "Кодер 1",
-    "coder2": "Кодер 2",
-    "coder3": "Кодер 3",
-    "reviewer": "Ревьюер",
-    "tester": "Тестировщик",
-}
+from .team import DEFAULT_TITLES, WRITER_KINDS, default_kind, title_of
+
+ROLE_TITLES = DEFAULT_TITLES
+USER = "user"
 
 ROLE_PROMPTS = {
     "architect": (
@@ -49,7 +46,20 @@ ROLE_PROMPTS = {
         "граничные случаи, негативные сценарии, нагрузку. Сообщаешь о найденных проблемах "
         "конкретным кодерам, итог — архитектору."
     ),
+    "expert": (
+        "Ты — эксперт команды в своей области (см. описание роли). Отвечай на вопросы коллег, проверяй их "
+        "решения, когда тебя зовут, и предлагай конкретные правки — упоминая того, кому они нужны. "
+        "Код сам не пишешь. Если вопрос не по твоей части — так и скажи одной строкой, без @упоминаний."
+    ),
 }
+MANAGER_LEADS = (       # менеджер, когда архитектора в команде нет: работу ведёт он
+    "Ты — менеджер и ведёшь работу: архитектора в команде нет. Сформулируй задачу пользователя (что сделать, "
+    "критерии готовности) и раздай её кодерам (@coder1 …): маленькую — целиком одному, вместе с тестами. "
+    "Отвечай на их вопросы, упоминая спросившего; мелкие развилки, которых нет в задаче, решай сам. "
+    "Ревьюера зови, когда есть готовый код. Когда работа влита, один раз отчитайся @user — что сделано и "
+    "как проверено; коллег в отчёте называй без @. Если без выбора пользователя не решить — дай варианты "
+    "А/Б с аргументами и спроси @user. Код не пишешь."
+)
 
 PROTOCOL = """\
 ## Команда
@@ -99,17 +109,17 @@ NO_WRITE_HINT = ("Инструментов записи у тебя нет: ка
                  "в первой строке комментария.")
 
 
-def tools_section(role: str, tools: list[str], worktrees: bool = False) -> str:
+def tools_section(role: str, tools: list[str], worktrees: bool = False, kind: str | None = None) -> str:
+    kind = kind or default_kind(role)
     if not tools:
-        base = "coder" if role.startswith("coder") else role
-        return NO_WRITE_HINT if base in ("coder", "tester") else ""
+        return NO_WRITE_HINT if kind in WRITER_KINDS else ""
     have = set(tools)
     lines = ["## Инструменты", f"Доступны: {', '.join(tools)}. Они работают с реальным репозиторием."]
     if have & {"read_file", "search", "list_files"}:
         lines.append(TOOL_HINTS["read"])
     if have & {"write_file", "edit_file"}:
         lines.append(TOOL_HINTS["write"])
-    elif role.startswith("coder") or role == "tester":
+    elif kind in WRITER_KINDS:
         lines.append(NO_WRITE_HINT)
     if "git_diff" in have:
         lines.append(TOOL_HINTS["diff"])
@@ -127,7 +137,7 @@ def tools_section(role: str, tools: list[str], worktrees: bool = False) -> str:
     return "\n".join(lines)
 
 
-def native_section(role: str, ws: dict) -> str:
+def native_section(role: str, ws: dict, merger: bool | None = None) -> str:
     """Для CLI-агентов (Codex, Claude Code): инструменты у них свои, объясняем рамки и директивы."""
     lines = ["## Инструменты",
              f"У тебя собственные инструменты агента. Рабочая папка: {ws['path']}."]
@@ -151,25 +161,89 @@ def native_section(role: str, ws: dict) -> str:
                else "смотри, читая файлы в worktree и сравнивая с файлами основной ветки (команды тебе недоступны)")
         lines.append(f"- Кодеры и тестировщик работают в своих worktree: {ws['worktrees_dir']}/<агент> внутри "
                      f"репозитория. Их изменения: {how}.")
-        if role == "manager":
+        if role == "manager" if merger is None else merger:
             lines.append("- После APPROVED система вливает ветку сама. Влить вручную, если попросили, — "
                          "отдельной строкой: MERGE coder1. Результат придёт сообщением от git.")
     return "\n".join(lines)
 
 
+def _lead(roster: list[str], kind_of) -> str:
+    for kind in ("architect", "manager"):
+        names = [n for n in roster if kind_of(n) == kind]
+        if names:
+            return names[0]
+    return roster[0] if roster else ""
+
+
+def adapt_mentions(text: str, role: str, roster: list[str], kind_of) -> str:
+    """Стандартные промпты зовут коллег по типу (@architect, @reviewer, @manager). Подставляем реальные
+    имена, а без такой роли в команде — того, кто ведёт работу (или пользователя, если ведёт сам агент)."""
+    lead = _lead(roster, kind_of)
+
+    def repl(m: re.Match) -> str:
+        kind = m.group(1)
+        names = [n for n in roster if kind_of(n) == kind]
+        who = names[0] if names else lead
+        return f"@{USER if who in (role, '') else who}"
+
+    return re.sub(r"@(architect|manager|reviewer)\b", repl, text)
+
+
+def absent_notes(role: str, kind: str, roster: list[str], kind_of) -> list[str]:
+    """Как работать, когда части команды нет (не в составе или выключена на задачу через /off)."""
+    have = {kind_of(n) for n in roster}
+    lead = _lead(roster, kind_of)
+    notes = []
+    if "reviewer" not in have:
+        if role == lead:
+            notes.append("Ревьюера в команде нет: готовую работу кодеров проверяешь ты. Если всё хорошо — начни "
+                         "ответ строкой APPROVED и никого не упоминай: система вольёт ветку и пришлёт тебе "
+                         "результат. Замечания — тому, кто делал.")
+        elif kind in WRITER_KINDS and lead:
+            notes.append(f"Ревьюера в команде нет: готовую работу отдавай @{lead} — он проверит и вольёт.")
+    if role == lead and "manager" not in have and kind != "manager":
+        notes.append("Менеджера в команде нет: задачу от пользователя получаешь сразу ты. Если без выбора "
+                     "пользователя не обойтись — спроси @user сам, с вариантами.")
+    if role == lead and "tester" not in have:
+        notes.append("Тестировщика в команде нет: тесты пишут кодеры.")
+    return notes
+
+
 def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, extra: str = "",
-                  tools: list[str] | None = None, worktrees: bool = False, native: dict | None = None) -> str:
-    base_role = "coder" if role.startswith("coder") else role
-    roster_txt = "\n".join(f"- @{r} — {ROLE_TITLES.get(r, r)}{' (это ты)' if r == role else ''}"
-                           for r in roster)
+                  tools: list[str] | None = None, worktrees: bool = False, native: dict | None = None,
+                  team=None) -> str:
+    """team — Config: типы, названия, описания и свои промпты ролей. Без него — по именам (команда по умолчанию)."""
+    def kind_of(n: str) -> str:
+        return team.kind_of(n) if team is not None else default_kind(n)
+
+    ac = team.agents.get(role) if team is not None else None
+    kind = kind_of(role)
+    lead = _lead(roster, kind_of)
+
+    def line(r: str) -> str:
+        desc = team.agents[r].description if team is not None and r in team.agents else ""
+        return f"- @{r} — {title_of(team, r)}{': ' + desc if desc else ''}{' (это ты)' if r == role else ''}"
+
     lang = {"ru": "русский", "en": "английский"}.get(language, language)
+    if ac is not None and ac.prompt:
+        body = ac.prompt.strip()
+    elif kind == "manager" and role == lead:
+        body = adapt_mentions(MANAGER_LEADS, role, roster, kind_of)
+    else:
+        body = adapt_mentions(ROLE_PROMPTS[kind], role, roster, kind_of)
+    if ac is not None and ac.description:
+        body = f"Твоя роль в этой команде: {ac.description}\n\n{body}"
+    notes = absent_notes(role, kind, roster, kind_of)
+    if notes:
+        body += "\n\n" + "\n".join(f"- {n}" for n in notes)
     parts = [
-        f"# Ты: @{role} — {ROLE_TITLES.get(role, role)}",
-        ROLE_PROMPTS[base_role],
-        PROTOCOL.format(roster=roster_txt, language=lang),
+        f"# Ты: @{role} — {title_of(team, role)}",
+        body,
+        adapt_mentions(PROTOCOL, role, roster, kind_of).format(roster="\n".join(map(line, roster)), language=lang),
     ]
-    section = native_section(role, native) if native else tools_section(role, tools or [], worktrees)
-    if role == "architect" and (native.get("worktrees_dir") if native else worktrees):
+    section = (native_section(role, native, merger=role == lead or kind == "manager") if native
+               else tools_section(role, tools or [], worktrees, kind))
+    if role == lead and kind in ("architect", "manager") and (native.get("worktrees_dir") if native else worktrees):
         section = "\n".join(filter(None, [section or "## Инструменты", LEAD_BRANCHES]))
     if section:
         parts.append(section)
@@ -178,3 +252,4 @@ def system_prompt(role: str, roster: list[str], language: str, repo_ctx: str, ex
     if extra:
         parts.append(extra)
     return "\n\n".join(parts)
+

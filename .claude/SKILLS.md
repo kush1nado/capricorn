@@ -177,6 +177,22 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   клона, а не редактируемую установку. Git в песочнице Codex не читает `~/.config/git/ignore` и пишет
   предупреждения — git-тесты падают; агент обходит это своей `XDG_CONFIG_HOME`.
 
+## Состав команды и типы ролей
+
+- Имя агента ≠ тип роли (`capricorn/team.py`, `.capricorn/team.yaml`). Поведение проверяй **по типу**, а не по имени:
+  `cfg.kind_of(n)`, `cfg.is_writer(n)`, `orch.names_of(kind)`, `orch.lead`, `orch.approvers`, `orch.default_target`.
+  Сравнение `name == "reviewer"` или `startswith("coder")` в новом коде — ошибка: у проекта может быть `security`
+  типа reviewer и `dev` типа coder. Исключения — только стандартные имена в стандартных местах (цвета, заголовки).
+- `roster` = в составе (`enabled`) и не выключен на задачу (`orch.off`, команды `/off` `/on`, сбрасывается в `/new`).
+  `complex_mode` — теперь просто `enabled` у coder3 (свойство Config).
+- Стандартные промпты зовут коллег по типу (`@architect`, `@reviewer`, `@manager`); `adapt_mentions` подставляет
+  настоящие имена, `absent_notes` перестраивает работу, когда типа нет. Свой `prompt` роли не трогаем.
+  Подставлять — только в шаблон протокола **до** `format(roster=…)`, иначе в списке состава `@reviewer` станет `@user`.
+- Новая роль без модели в конфиге берёт модель агента того же типа (иначе непишущего): `mock/mock` в реальном
+  прогоне молча бы ничего не делал. Заглушка `--mock` играет роль по модели (`mock/architect`), а не по имени.
+- Смена состава на лету — `Orchestrator.set_team` (только когда никто не делает ход); TUI пересобирает панели
+  `rebuild_panels`. Сетка — 3 колонки, строк сколько нужно, лента добирает последнюю строку.
+
 ## Режимы --web / --desktop и сборка
 
 - `--web`: textual-serve запускает **отдельный процесс** Capricorn на каждую вкладку (`web.child_command`).

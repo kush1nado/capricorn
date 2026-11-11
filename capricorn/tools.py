@@ -17,7 +17,7 @@ from typing import Awaitable, Callable
 
 from .config import Config
 from .gitinfo import run as git_run
-from .worktrees import Worktrees, is_writer
+from .worktrees import Worktrees
 
 READ_MAX_LINES = 2000
 READ_MAX_CHARS = 60_000
@@ -37,6 +37,7 @@ ROLE_TOOLS = {
     "coder": [*READ_ONLY, "write_file", "edit_file", "run_tests", "sync_branch"],
     "reviewer": [*READ_ONLY, "run_tests"],
     "tester": [*READ_ONLY, "write_file", "edit_file", "run_tests", "sync_branch"],
+    "expert": READ_ONLY,
 }
 
 
@@ -147,8 +148,7 @@ class Toolbox(Workspace):
         if not tc.enabled:
             return []
         ac = self.cfg.agents[agent]
-        base = "coder" if agent.startswith("coder") else agent
-        names = ac.tools if ac.tools is not None else ROLE_TOOLS.get(base, [])
+        names = ac.tools if ac.tools is not None else ROLE_TOOLS.get(ac.kind, [])
         out = []
         for n in names:
             if n not in TOOLS or n in out:
@@ -163,11 +163,11 @@ class Toolbox(Workspace):
         return out
 
     def writers(self) -> list[str]:
-        return [a for a in self.cfg.agents if is_writer(a) and (a != "coder3" or self.cfg.complex_mode)]
+        return [a for a, ac in self.cfg.agents.items() if ac.enabled and self.cfg.is_writer(a)]
 
     def peeks_worktrees(self, agent: str) -> bool:
         """Может ли агент заглядывать в чужие worktree (параметр worktree)."""
-        return self.worktrees.active and not is_writer(agent)
+        return self.worktrees.active and not self.cfg.is_writer(agent)
 
     def spec(self, agent: str, name: str) -> dict:
         s = TOOLS[name].as_dict()
@@ -190,7 +190,7 @@ class Toolbox(Workspace):
                 raise ToolError(f"{peek} ещё ничего не делал — его worktree не создан")
             return Workspace(await self.worktrees.path(peek), self.cfg, agent=agent, toolbox=self,
                              base=await self.worktrees.base(peek), label=peek)
-        if self.worktrees.active and is_writer(agent):
+        if self.worktrees.active and self.cfg.is_writer(agent):
             wt = await self.worktrees.ensure(agent)
             return Workspace(wt, self.cfg, agent=agent, toolbox=self,
                              base=await self.worktrees.base(agent), label=agent)
@@ -436,6 +436,6 @@ TOOLS: dict[str, ToolSpec] = {s.name: s for s in [
              _schema({}, []), _sync_branch),
     ToolSpec("merge_work", "Влить работу агента (его ветку capricorn/<агент>) в основную ветку. "
                            "Вызывай после APPROVED от ревьюера.", _schema({
-        "agent": {"type": "string", "description": "чью работу вливать: coder1, coder2, coder3, tester"},
+        "agent": {"type": "string", "description": "чью работу вливать: имя кодера или тестировщика (coder1, tester …)"},
     }, ["agent"]), _merge_work),
 ]}

@@ -20,10 +20,6 @@ MARKERS = ("<<<<<<< ", ">>>>>>> ")
 TEMP_DIR = ".capricorn-tmp"      # временные файлы пишущего CLI-агента (TEMP), вне git
 
 
-def is_writer(agent: str) -> bool:
-    return agent.startswith("coder") or agent == "tester"
-
-
 def identity(agent: str) -> list[str]:
     return ["-c", f"user.name=Capricorn {agent}", "-c", f"user.email={agent}@capricorn.local"]
 
@@ -265,7 +261,7 @@ class Worktrees:
         main = await self.main_branch()
         lines = []
         for a in agents:
-            if not is_writer(a):
+            if not self.cfg.is_writer(a):
                 continue
             if not await self.exists(a):
                 lines.append(f"{a:8} — ещё не создан")
@@ -284,7 +280,7 @@ class Worktrees:
         main = await self.main_branch()
         removed, failed = [], []
         for a in agents:
-            if not is_writer(a) or not await self.exists(a):
+            if not self.cfg.is_writer(a) or not await self.exists(a):
                 continue
             wt = await self.path(a)
             _, dirty = await self._git(wt, "status", "--porcelain")

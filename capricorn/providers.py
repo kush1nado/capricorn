@@ -346,7 +346,9 @@ class MockProvider(Provider):
     async def stream(self, *, model, system, messages, temperature, max_tokens, agent,
                      tools=None, tool_choice="auto"):
         last = (messages[-1].get("content") or "") if messages else ""
-        text = self._replies(agent, last)
+        # роль — по модели (mock/architect у роли lead), иначе по имени агента
+        who = model if re.sub(r"\d", "", model) in ("manager", "architect", "reviewer", "coder", "tester") else agent
+        text = self._replies(who, last)
         await asyncio.sleep(random.uniform(0.3, 1.0))
         for i in range(0, len(text), 4):
             yield text[i:i + 4]

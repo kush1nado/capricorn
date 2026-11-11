@@ -735,3 +735,73 @@ async def test_usage_command(ui):
     await wait_for(pilot, lambda: any(t.startswith("АГЕНТ") and "итого" in t for t in feed_texts(app)))
     from capricorn.tui import HELP
     assert "/usage" in HELP
+
+
+# ------------------------------------------------------- состав команды
+
+TUI_TEAM = """\
+roles:
+  lead:     {kind: architect, title: Техлид}
+  dev:      {kind: coder}
+  security: {kind: reviewer, title: Безопасник, description: ищет дыры}
+  qa:       {kind: tester, enabled: false}
+"""
+
+
+@pytest.fixture
+async def ui_team(tmp_path, fast_mock):
+    (tmp_path / ".capricorn").mkdir()
+    (tmp_path / ".capricorn" / "team.yaml").write_text(TUI_TEAM, encoding="utf-8")
+    app = CapricornApp(load_config(force_mock=True), str(tmp_path))
+    async with app.run_test(size=(180, 50)) as pilot:
+        yield app, pilot
+        await drain(app)
+        app.orch.stop_all()
+        for t in app.orch._tasks:
+            t.cancel()
+
+
+async def test_panels_follow_team_file(ui_team):
+    app, pilot = ui_team
+    assert list(app.panels) == ["lead", "dev", "security", "qa"]
+    assert app.panels["qa"].display is False, "не в составе — панели не видно"
+    assert "ТЕХЛИД" in app.panels["lead"].border_title and "БЕЗОПАСНИК" in app.panels["security"].border_title
+    assert app.visible_panels() == ["git", "lead", "dev", "security", "feed"]
+    assert app.feed.styles.column_span == 2 and app.query_one("#grid").styles.grid_size_rows == 2
+    assert app.selected == "lead", "без менеджера задачу принимает ведущий"
+    await pilot.press("alt+4")
+    assert app.selected == "security"
+
+
+async def test_off_and_on_commands(ui_team):
+    app, pilot = ui_team
+    await submit(pilot, "/off security")
+    assert "security" in app.orch.off and app.panels["security"].has_class("off")
+    assert any("выключен на эту задачу" in t for t in feed_texts(app))
+    await submit(pilot, "/on security")
+    assert "security" not in app.orch.off and not app.panels["security"].has_class("off")
+    await submit(pilot, "/off qa")
+    assert any("не в составе" in t for t in feed_texts(app))
+
+
+async def test_team_command_lists_roles(ui_team):
+    app, pilot = ui_team
+    await submit(pilot, "/team")
+    text = next(t for t in feed_texts(app) if "team.yaml" in t)
+    assert "security" in text and "reviewer" in text and "ищет дыры" in text and "не в составе" in text
+    from capricorn.tui import HELP
+    assert "/off <агент>" in HELP and "/team" in HELP
+
+
+async def test_broken_team_file_shown_in_feed(tmp_path, fast_mock):
+    (tmp_path / ".capricorn").mkdir()
+    (tmp_path / ".capricorn" / "team.yaml").write_text("roles:\n  x1: {kind: boss}\n", encoding="utf-8")
+    app = CapricornApp(load_config(force_mock=True), str(tmp_path))
+    async with app.run_test(size=(180, 50)) as pilot:
+        await pilot.pause()
+        assert any("boss" in t and "по умолчанию" in t for t in feed_texts(app))
+        assert "manager" in app.panels
+        await drain(app)
+        app.orch.stop_all()
+        for t in app.orch._tasks:
+            t.cancel()

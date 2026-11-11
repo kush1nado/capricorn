@@ -108,6 +108,16 @@ def presets(cfg: Config, available: list[tuple[str, str]]) -> dict[str, dict[str
     return out
 
 
+KIND_SAMPLE = {"architect": "architect", "manager": "manager", "coder": "coder1", "reviewer": "reviewer",
+               "tester": "tester", "expert": "reviewer"}
+
+
+def preset_key(role: str, kind: str | None = None) -> str:
+    """Пресеты описаны для стандартных ролей; новой роли достаётся модель стандартной того же типа."""
+    from .team import default_kind
+    return KIND_SAMPLE.get(kind or default_kind(role), "reviewer")
+
+
 def apply_models(cfg: Config, models: dict[str, str]) -> None:
     """Назначить модели и добавить нужные CLI-провайдеры, если в конфиге их нет."""
     for role, model in models.items():

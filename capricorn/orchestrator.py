@@ -23,7 +23,8 @@ from .providers import Provider, ProviderError, build_providers
 from .tools import Toolbox, run_tests_in
 from .sessions import VERSION as SESSION_VERSION
 from .sessions import SessionStore
-from .worktrees import Outcome, is_writer
+from .team import TeamError, apply_team, load_team, skills_section
+from .worktrees import Outcome
 
 USER = "user"
 
@@ -32,11 +33,12 @@ ALIASES = {
     "manager": "manager", "pm": "manager", "менеджер": "manager",
     "reviewer": "reviewer", "review": "reviewer", "ревьюер": "reviewer",
     "tester": "tester", "qa": "tester", "тестировщик": "tester",
-    "coder1": "coder1", "coder2": "coder2", "coder3": "coder3",
+    "expert": "expert", "эксперт": "expert",
     "coders": "*coders", "coder": "*coders", "кодеры": "*coders",
     "all": "*all", "все": "*all", "team": "*all",
     "user": USER, "me": USER, "human": USER,
 }
+KIND_ALIASES = {"architect", "manager", "reviewer", "tester", "expert"}   # @тип — все агенты этого типа
 MENTION_RE = re.compile(r"(?<![\w@])@([\wа-яё]+)", re.I)
 CODE_RE = re.compile(r"```.*?(```|$)|`[^`\n]*`", re.S)
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
@@ -82,6 +84,7 @@ class Agent:
         self.context: list[Message] = []    # подслушанное (observe_all), без хода
         self.wake = asyncio.Event()
         self.gen_task: asyncio.Task | None = None
+        self.loop_task: asyncio.Task | None = None
         self._stop_requested = False        # отмену хода запросил /stop, а не отмена самого цикла
         self.status = "idle"
         self.tokens_in = 0                  # новые входные токены
@@ -176,11 +179,13 @@ class Agent:
             native = getattr(provider, "native_tools", False)    # CLI-агент со своими инструментами
             tools = [] if native else self.orch.toolbox.specs_for(self.name)
             extra = {"workspace": await self.orch.native_workspace(self.name)} if native else {}
+            extra_prompt = "\n\n".join(filter(None, [skills_section(self.orch.repo, self.cfg.skills),
+                                                    self.cfg.extra_prompt]))
             system = system_prompt(self.name, self.orch.roster, self.orch.cfg.language,
-                                   await self.orch.repo_context(), self.cfg.extra_prompt,
+                                   await self.orch.repo_context(), extra_prompt,
                                    tools=[t["name"] for t in tools],
                                    worktrees=self.orch.toolbox.worktrees.active,
-                                   native=extra.get("workspace"))
+                                   native=extra.get("workspace"), team=self.orch.cfg)
             rounds = 0
             while True:
                 last_round = rounds >= self.orch.cfg.tools.max_rounds
@@ -261,10 +266,12 @@ class Agent:
         else:
             targets = self.orch.parse_targets(self.name, clean)
             if targets:                                       # адресатам — где лежит работа пишущего агента
-                if "reviewer" in targets:
+                review = any(t in self.orch.approvers for t in targets)
+                if review and self.orch.cfg.is_writer(self.name):
                     self.set_status("testing")
-                clean += await self.orch.branch_note(self.name, run_tests="reviewer" in targets)
-            approved = self.name == "reviewer" and bool(APPROVED_RE.search(CODE_RE.sub("", clean)))
+                clean += await self.orch.branch_note(self.name, run_tests=review)
+            approved = (self.name in self.orch.approvers
+                        and bool(APPROVED_RE.search(CODE_RE.sub("", clean))))
             reply_to = None
             if not targets:
                 if approved:          # с worktree вольёт система и сообщит техлиду; без них — сразу техлиду
@@ -282,7 +289,7 @@ class Agent:
         if msg.kind == "team":
             await self.orch.run_directives(self.name, clean)
             if approved and self.orch.toolbox.worktrees.active:
-                await self.orch.merge_approved()
+                await self.orch.merge_approved(self.name)
         self.orch.save()
         return True
 
@@ -290,9 +297,10 @@ class Agent:
         """Менеджер написал агенту, пока тот уже отвечал менеджеру: сообщения разминулись, и новый ход
         повторил бы сделанное (живые прогоны: второе одинаковое ревью). Оставляем их контекстом — агент
         увидит их в следующем ходе, а менеджер, получив ответ, напишет заново, если что-то нужно."""
-        if "manager" not in replied_to:
+        managers = set(self.orch.names_of("manager"))
+        if not managers & set(replied_to):
             return
-        crossed = [m for m in self.pending if m.id > reply_id and m.sender == "manager" and m.kind == "team"]
+        crossed = [m for m in self.pending if m.id > reply_id and m.sender in managers and m.kind == "team"]
         if crossed:
             self.pending = [m for m in self.pending if m not in crossed]
             self.context += crossed
@@ -318,6 +326,16 @@ class Orchestrator:
         self.repo = repo
         self.emit = emit
         self.providers: dict[str, Provider] = build_providers(cfg.providers)
+        self.team_error = ""                      # team.yaml не разобран — работаем составом по умолчанию
+        try:
+            roles = load_team(repo)
+        except TeamError as e:
+            roles, self.team_error = None, str(e)
+        complex_on = cfg.complex_flag
+        apply_team(cfg, roles)
+        if complex_on and "coder3" in cfg.agents:   # --complex сильнее team.yaml
+            cfg.agents["coder3"].enabled = True
+        self.off: set[str] = set()                # выключены на текущую задачу (/off), до /new
         self.agents = {name: Agent(self, name) for name in cfg.agents}
         self.git = GitWatcher(repo)
         self.toolbox = Toolbox(repo, cfg)
@@ -340,6 +358,7 @@ class Orchestrator:
         self.session_id = self.store.new_id()
         self.created = time.time()
         self.messages = []
+        self.off = set()
         self.task_msg: Message | None = None       # последняя задача пользователя команде — видна всем агентам
         self.log_path = self.store.dir(self.session_id) / "log.jsonl"
 
@@ -351,6 +370,7 @@ class Orchestrator:
             "models": {n: a.model for n, a in self.cfg.agents.items()},
             "messages": [asdict(m) for m in self.messages],
             "task": self.task_msg.id if self.task_msg else 0,
+            "off": sorted(self.off),
             "agents": {n: {"history": a.history, "pending": [asdict(m) for m in a.pending],
                            "context": [asdict(m) for m in a.context], "tokens_in": a.tokens_in,
                            "tokens_cached": a.tokens_cached,
@@ -381,6 +401,7 @@ class Orchestrator:
         self.task_msg = next((m for m in self.messages if m.id == state.get("task")), None)
         self.budget = int(state.get("budget", self.cfg.budget))
         self.cfg.complex_mode = bool(state.get("complex_mode", self.cfg.complex_mode))
+        self.off = {n for n in state.get("off") or [] if n in self.agents}
         for name, model in (state.get("models") or {}).items():
             if name not in self.cfg.agents:
                 continue
@@ -410,15 +431,74 @@ class Orchestrator:
 
     # --------------------------------------------------------------- setup
     def start(self):
-        self._tasks = [asyncio.create_task(a.loop()) for a in self.agents.values()]
+        self._tasks = [self._start_agent(a) for a in self.agents.values()]
+
+    def _start_agent(self, a: Agent) -> asyncio.Task:
+        a.loop_task = asyncio.create_task(a.loop())
+        return a.loop_task
+
+    def set_team(self, roles) -> None:
+        """Поменять состав на лету (окно /team): новые агенты запускаются, убранные останавливаются.
+        Пока кто-то из команды делает ход, состав не меняем."""
+        busy = [a.name for a in self.agents.values() if a.gen_task is not None and not a.gen_task.done()]
+        if busy:
+            raise ValueError(f"сейчас работают: {', '.join(busy)}. Дождись или /stop, потом меняй состав")
+        apply_team(self.cfg, roles)
+        for name in [n for n in self.agents if n not in self.cfg.agents]:
+            a = self.agents.pop(name)
+            if a.loop_task is not None:
+                a.loop_task.cancel()
+                self._tasks = [t for t in self._tasks if t is not a.loop_task]
+        for name in self.cfg.agents:
+            if name not in self.agents:
+                a = self.agents[name] = Agent(self, name)
+                if self._tasks:
+                    self._tasks.append(self._start_agent(a))
+        self.agents = {n: self.agents[n] for n in self.cfg.agents}
+        self.off &= set(self.agents)
+        self.save()
 
     @property
     def roster(self) -> list[str]:
-        return [n for n in self.agents if n != "coder3" or self.cfg.complex_mode]
+        """Кто работает над задачей: в составе команды и не выключен на эту задачу (/off)."""
+        return [n for n in self.agents if self.cfg.agents[n].enabled and n not in self.off]
 
     @property
     def coders(self) -> list[str]:
-        return [n for n in self.roster if n.startswith("coder")]
+        return self.names_of("coder")
+
+    def names_of(self, kind: str) -> list[str]:
+        return [n for n in self.roster if self.cfg.kind_of(n) == kind]
+
+    @property
+    def default_target(self) -> str:
+        """Кому идёт задача пользователя без @: менеджеру из конфига, иначе любому менеджеру, иначе ведущему."""
+        if self.cfg.default_target in self.roster:
+            return self.cfg.default_target
+        managers = self.names_of("manager")
+        return managers[0] if managers else self.lead
+
+    @property
+    def approvers(self) -> list[str]:
+        """Чьё APPROVED вливает работу: ревьюеры, а без них — ведущий."""
+        return self.names_of("reviewer") or ([self.lead] if self.lead in self.roster else [])
+
+    def set_off(self, name: str, off: bool):
+        """Выключить или вернуть роль на текущую задачу (до /new)."""
+        if name not in self.agents:
+            raise ValueError(f"нет агента «{name}». Есть: {', '.join(self.agents)}")
+        if not self.cfg.agents[name].enabled:
+            raise ValueError(f"{name} не в составе команды — включи его в /team")
+        if off:
+            if [n for n in self.roster if n != name] == []:
+                raise ValueError("нельзя выключить последнего в команде")
+            self.off.add(name)
+            a = self.agents[name]
+            a.cancel()
+            a.pending.clear()
+        else:
+            self.off.discard(name)
+        self.save()
 
     def provider_for(self, agent: str) -> Provider:
         p = self.cfg.agents[agent].provider
@@ -438,12 +518,21 @@ class Orchestrator:
         stripped = CODE_RE.sub("", text)
         out: list[str] = []
         for raw in MENTION_RE.findall(stripped):
-            key = ALIASES.get(raw.lower())
-            if key is None:
-                continue
-            names = (self.coders if key == "*coders"
-                     else [n for n in self.roster] if key == "*all"
-                     else [key])
+            word = raw.lower()
+            if word in self.agents:            # точное имя сильнее псевдонима типа
+                names = [word]
+            else:
+                key = ALIASES.get(word)
+                if key is None:
+                    continue
+                if key == "*coders":
+                    names = self.coders
+                elif key == "*all":
+                    names = list(self.roster)
+                elif key in KIND_ALIASES:          # @reviewer без агента с таким именем — все этого типа
+                    names = self.names_of(key)
+                else:
+                    names = [key]
             for n in names:
                 if n != sender and n not in out and (n == USER or n in self.roster):
                     out.append(n)
@@ -453,7 +542,7 @@ class Orchestrator:
               emit_message: bool = True, reply_to: list[str] | None = None) -> Message:
         to = self.parse_targets(sender, text)
         if sender == USER and not to:
-            to = [self.cfg.default_target]
+            to = [self.default_target] if self.default_target in self.roster else []
         elif not to and reply_to:                 # ответ без @ на чужой вопрос — тому, кто спрашивал
             to = [n for n in reply_to if n in self.roster and n != sender]
         msg = Message(id=msg_id or next(self.ids), sender=sender, to=to, content=text)
@@ -472,8 +561,12 @@ class Orchestrator:
 
     @property
     def lead(self) -> str:
-        """Кто ведёт работу: архитектор (техлид), а без него — менеджер."""
-        return "architect" if "architect" in self.roster else "manager"
+        """Кто ведёт работу: архитектор (техлид), а без него — менеджер, а без них — первый в команде."""
+        for kind in ("architect", "manager"):
+            names = self.names_of(kind)
+            if names:
+                return names[0]
+        return self.roster[0] if self.roster else "manager"
 
     def askers(self, batch: list[Message]) -> list[str]:
         """Агенты, задавшие вопрос в этом батче, — им уйдёт ответ без @."""
@@ -483,13 +576,22 @@ class Orchestrator:
                 out.append(m.sender)
         return out
 
-    async def merge_approved(self):
-        """Ревьюер написал APPROVED: влить ветку того, кто последним отдавал ему работу, и сказать техлиду.
+    async def merge_approved(self, approver: str = "reviewer"):
+        """approver написал APPROVED: влить ветку того, кто последним отдавал ему работу, и сказать техлиду.
+        Если работу отдали нескольким ревьюерам сразу, вливаем, когда одобрили все.
         Менеджер в обычной работе не участвует (решение владельца)."""
-        writer = next((m.sender for m in reversed(self.messages)
-                       if is_writer(m.sender) and "reviewer" in m.to), None)
-        if writer is None:
-            self.notify(self.lead, "ревьюер написал APPROVED, но неясно, чью ветку вливать — влей вручную (MERGE)")
+        at = next((i for i in range(len(self.messages) - 1, -1, -1)
+                   if self.cfg.is_writer(self.messages[i].sender) and approver in self.messages[i].to), None)
+        if at is None:
+            self.notify(self.lead, f"{approver} написал APPROVED, но неясно, чью ветку вливать — влей вручную (MERGE)")
+            return
+        request = self.messages[at]
+        writer = request.sender
+        waiting = [n for n in request.to if n in self.approvers and n != approver
+                   and not any(m.sender == n and APPROVED_RE.search(CODE_RE.sub("", m.content))
+                               for m in self.messages[at + 1:])]
+        if waiting:
+            self.emit("system", text=f"» APPROVED от {approver}; {writer}: ждём ещё {', '.join(waiting)}")
             return
         try:
             res = await self.toolbox.worktrees.merge(writer)
@@ -505,7 +607,7 @@ class Orchestrator:
         """Сообщали ли техлиду о слиянии ветки writer после его последней отдачи на ревью."""
         branch = self.toolbox.worktrees.branch(writer)
         for m in reversed(self.messages):
-            if m.sender == writer and "reviewer" in m.to:
+            if m.sender == writer and any(n in self.approvers for n in m.to):
                 return False
             if m.sender == "git" and f"{branch} влита" in m.content:
                 return True
@@ -568,7 +670,7 @@ class Orchestrator:
         self._log(msg)
         # задачей — менеджеру и тем, кого упомянули (итог менеджера — обычно его поручения)
         actors = {n for n in self.parse_targets(agent, text) if n in self.agents}
-        actors.add(self.cfg.default_target)
+        actors.add(self.default_target)
         for name in others:
             target = self.agents[name]
             if name in actors:
@@ -635,7 +737,7 @@ class Orchestrator:
     async def native_workspace(self, agent: str) -> dict:
         """Где работает CLI-агент и можно ли ему писать (как у наших инструментов: пишут кодеры и тестировщик)."""
         tc = self.cfg.tools
-        write = tc.enabled and tc.write and is_writer(agent)
+        write = tc.enabled and tc.write and self.cfg.is_writer(agent)
         ws = await self.toolbox.workspace_for(agent, None) if tc.enabled else self.toolbox
         wts = self.toolbox.worktrees
         provider = self.provider_for(agent)
@@ -656,7 +758,7 @@ class Orchestrator:
         не знает, где искать код (живой прогон: «покажи, где файлы» — и ход впустую).
         run_tests — прогнать test_command в его ветке здесь, вне песочницы: ревьюер на CLI тестов не запустит."""
         wts = self.toolbox.worktrees
-        if not (is_writer(agent) and wts.active):
+        if not (self.cfg.is_writer(agent) and wts.active):
             return ""
         try:
             changes = await wts.changes(agent)
@@ -737,14 +839,14 @@ class Orchestrator:
             target = m.group(2)
             try:
                 if target is not None:
-                    if agent != "manager":
+                    if agent != self.lead and self.cfg.kind_of(agent) != "manager":
                         continue
                     if target not in self.toolbox.writers():
                         res = Outcome(False, f"нет ветки агента «{target}». Есть: {', '.join(self.toolbox.writers())}")
                     else:
                         res = await wts.merge(target)
                 else:
-                    if not is_writer(agent):
+                    if not self.cfg.is_writer(agent):
                         continue
                     res = await wts.sync(agent)
             except Exception as e:  # noqa: BLE001 — git-ошибка не должна ронять цикл агента
