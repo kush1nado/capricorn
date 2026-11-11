@@ -703,7 +703,7 @@ async def test_agent_diff_without_work_and_for_non_writer(ui_git):
     await wait_for(pilot, lambda: any("diff есть у кодеров" in t for t in feed_texts(app)))
 
 
-async def test_merge_conflict_opens_git_window_and_tells_manager(ui_git):
+async def test_merge_conflict_opens_git_window_and_tells_lead(ui_git):
     from capricorn.tui import GitScreen
     app, pilot = ui_git
     box = app.orch.toolbox
@@ -725,7 +725,7 @@ async def test_merge_conflict_opens_git_window_and_tells_manager(ui_git):
     await wait_for(pilot, lambda: not any(c.conflict for c in scr.files))
     await pilot.press("m")
     await wait_for(pilot, lambda: scr.state == "")
-    await wait_for(pilot, lambda: any(m.sender == "git" and "manager" in m.to and "завершил слияние" in m.content
+    await wait_for(pilot, lambda: any(m.sender == "git" and "architect" in m.to and "завершил слияние" in m.content
                                       for m in app.orch.messages))
 
 

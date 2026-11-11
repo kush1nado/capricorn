@@ -252,6 +252,7 @@ class Agent:
         self.history.append({"role": "assistant", "content": text})
         clean = ECHO_RE.sub("", THINK_RE.sub("", text).strip())
         kinds = {m.kind for m in batch}
+        approved = False
         if "handoff" in kinds:                 # итог личного диалога — всей команде
             msg = self.orch.share_summary(self.name, clean, msg_id)
         elif "private" in kinds:               # ответ в личном канале — только пользователю
@@ -263,7 +264,14 @@ class Agent:
                 if "reviewer" in targets:
                     self.set_status("testing")
                 clean += await self.orch.branch_note(self.name, run_tests="reviewer" in targets)
-            msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False)
+            approved = self.name == "reviewer" and bool(APPROVED_RE.search(CODE_RE.sub("", clean)))
+            reply_to = None
+            if not targets:
+                if approved:          # с worktree вольёт система и сообщит техлиду; без них — сразу техлиду
+                    reply_to = [] if self.orch.toolbox.worktrees.active else [self.orch.lead]
+                else:                 # замер: ответ архитектора без @coder1 ушёл в никуда, команда встала
+                    reply_to = self.orch.askers(batch)
+            msg = self.orch.route(self.name, clean, msg_id=msg_id, emit_message=False, reply_to=reply_to)
             if (not any(n in self.orch.agents for n in msg.to)
                     and not DIRECTIVE_RE.search(CODE_RE.sub("", clean))):
                 self.orch.budget += 1     # ответ никого не будит — цепочку не продолжит, бюджет не тратит
@@ -273,6 +281,8 @@ class Agent:
         self.set_status("idle")
         if msg.kind == "team":
             await self.orch.run_directives(self.name, clean)
+            if approved and self.orch.toolbox.worktrees.active:
+                await self.orch.merge_approved()
         self.orch.save()
         return True
 
@@ -440,12 +450,12 @@ class Orchestrator:
         return out
 
     def route(self, sender: str, text: str, msg_id: int | None = None,
-              emit_message: bool = True) -> Message:
+              emit_message: bool = True, reply_to: list[str] | None = None) -> Message:
         to = self.parse_targets(sender, text)
         if sender == USER and not to:
             to = [self.cfg.default_target]
-        elif sender == "reviewer" and not to and APPROVED_RE.search(CODE_RE.sub("", text)) and "manager" in self.roster:
-            to = ["manager"]      # одобрение без @manager — иначе цепочка обрывается до слияния (живой прогон)
+        elif not to and reply_to:                 # ответ без @ на чужой вопрос — тому, кто спрашивал
+            to = [n for n in reply_to if n in self.roster and n != sender]
         msg = Message(id=msg_id or next(self.ids), sender=sender, to=to, content=text)
         self.messages.append(msg)
         self._log(msg)
@@ -459,6 +469,35 @@ class Orchestrator:
             if name not in to and name != sender and agent.cfg.observe_all and name in self.roster:
                 agent.context.append(msg)
         return msg
+
+    @property
+    def lead(self) -> str:
+        """Кто ведёт работу: архитектор (техлид), а без него — менеджер."""
+        return "architect" if "architect" in self.roster else "manager"
+
+    def askers(self, batch: list[Message]) -> list[str]:
+        """Агенты, задавшие вопрос в этом батче, — им уйдёт ответ без @."""
+        out = []
+        for m in batch:
+            if m.sender in self.agents and m.sender not in out and "?" in CODE_RE.sub("", m.content):
+                out.append(m.sender)
+        return out
+
+    async def merge_approved(self):
+        """Ревьюер написал APPROVED: влить ветку того, кто последним отдавал ему работу, и сказать техлиду.
+        Менеджер в обычной работе не участвует (решение владельца)."""
+        writer = next((m.sender for m in reversed(self.messages)
+                       if is_writer(m.sender) and "reviewer" in m.to), None)
+        if writer is None:
+            self.notify(self.lead, "ревьюер написал APPROVED, но неясно, чью ветку вливать — влей вручную (MERGE)")
+            return
+        try:
+            res = await self.toolbox.worktrees.merge(writer)
+        except Exception as e:  # noqa: BLE001 — git-ошибка не должна ронять цикл агента
+            res = Outcome(False, f"{type(e).__name__}: {e}")
+        self.emit("system", text=("» " if res.ok else "▲ ") + f"MERGE: {res.text}",
+                  level="info" if res.ok else "error")
+        self.notify(self.lead, f"APPROVED → {res.text}")
 
     def user_tasks(self) -> list[Message]:
         return [m for m in self.messages if m.sender == USER and m.kind == "team"]

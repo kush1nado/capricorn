@@ -69,9 +69,9 @@ def prompt(role, native=None):
 
 
 def test_prompts_teach_order_of_work():
-    mgr = prompt("manager")
-    assert "ревьюера" in mgr and "готов" in mgr                     # ревью — только с готовым кодом
-    assert "зависим" in mgr and ("SYNC" in mgr or "sync_branch" in mgr)
+    arch = prompt("architect")                                       # работу ведёт архитектор
+    assert "зависим" in arch and ("SYNC" in arch or "sync_branch" in arch)
+    assert "одному кодеру" in arch, "маленькую задачу не дробим (замер: 8 запусков вместо одного)"
     rev = prompt("reviewer")
     assert "проверять нечего" in rev                                 # и отвечает без @, не будя кодеров
     coder = prompt("coder1")
@@ -95,13 +95,16 @@ async def test_every_agent_sees_user_task_once(team):
     mgr = prov.calls_for("manager")[0].messages[-1]["content"]
     assert mgr.count("регистр не важен") == 1, "менеджер получил задачу напрямую — без дубля"
     assert orch.agents["reviewer"].task_seen == orch.task_msg.id
-    assert orch.agents["architect"].task_seen == 0, "кто не ходил — тот задачу ещё не видел"
+    assert orch.agents["tester"].task_seen == 0, "кто не ходил — тот задачу ещё не видел"
 
 
-def test_only_manager_assigns_coders():
-    arch = prompt("architect")
-    assert "только менеджер" in arch
-    assert "только ты" in prompt("manager")
+def test_manager_hands_task_to_architect_and_steps_in_only_on_trouble():
+    """Владелец: менеджер ставит задачу и отдаёт архитектору, а не реагирует на каждое сообщение."""
+    mgr = prompt("manager").lower()
+    assert "@architect" in mgr and "спор" in mgr and "застрял" in mgr
+    assert "мелочи" in mgr, "мелочи, которых нет в задаче, пользователю не задаём"
+    arch = prompt("architect").lower()
+    assert "раздаёшь работу кодерам" in arch and "@user" in arch
 
 
 async def test_late_agent_sees_task_and_followups(team):
@@ -114,20 +117,49 @@ async def test_late_agent_sees_task_and_followups(team):
     assert "сортировкой по алфавиту" in to_reviewer and "вариант А" in to_reviewer
 
 
-def test_manager_does_not_relay_direct_messages():
-    """Живой прогон 3: менеджер пересказал кодеру замечания ревьюера — лишний ход после одобрения."""
-    mgr = prompt("manager").lower()
-    assert "не пересказывай" in mgr and "один раз" in mgr
-
-
-async def test_approved_without_mention_still_reaches_manager(team):
-    """Живой прогон 4: ревьюер написал APPROVED без @manager — менеджер не проснулся, слияния не было."""
-    orch, events, _ = team({"reviewer": ["Проверяю ветку.\n\n**APPROVED**\n\nВсё хорошо."], "manager": ["ок"]})
-    orch.route("coder1", "@reviewer готово")
+async def test_approved_merges_writer_branch_without_manager(team):
+    """APPROVED — система сама вливает ветку того, чью работу одобрили, и сообщает архитектору."""
+    orch, events, repo = team({"coder1": ["Готово, @reviewer"],
+                               "reviewer": ["Проверяю ветку.\n\n**APPROVED**\n\nВсё хорошо."],
+                               "architect": ["Принято, всё готово. @user итог: фича влита."]})
+    await orch.toolbox.run("coder1", "write_file", {"path": "feature.py", "content": "ok\n"})
+    orch.route("architect", "@coder1 сделай фичу")
     await settle(orch)
-    msg = next(m for m in messages(events) if m.sender == "reviewer")
-    assert msg.to == ["manager"]
-    assert orch.agents["manager"].turns == 1
+    assert (repo / "feature.py").read_text(encoding="utf-8") == "ok\n"
+    git_msgs = [m for m in messages(events) if m.sender == "git"]
+    assert [m.to for m in git_msgs] == [["architect"]] and "влита" in git_msgs[0].content
+    assert orch.agents["manager"].turns == 0, "менеджер в обычной работе не участвует"
+    assert orch.agents["coder1"].turns == 1, "APPROVED не будит кодера ответом на его «готово?»"
+
+
+async def test_approved_without_worktrees_goes_to_architect(tmp_path):
+    from helpers import build_orch
+    orch, events = build_orch(tmp_path, {"reviewer": ["APPROVED"], "architect": ["ок"]})
+    orch.start()
+    try:
+        orch.route("coder1", "@reviewer готово")
+        await settle(orch)
+        assert next(m for m in messages(events) if m.sender == "reviewer").to == ["architect"]
+    finally:
+        for t in orch._tasks:
+            t.cancel()
+
+
+async def test_answer_without_mention_goes_back_to_who_asked(team):
+    """Замер: архитектор ответил на вопрос кодера без @coder1 — ответ ушёл в никуда, команда встала."""
+    orch, events, _ = team({"coder1": ["@architect номер — это id или позиция?", "понял, делаю"],
+                            "architect": ["Номер — постоянный id, не переиспользуется."]})
+    orch.route("architect", "@coder1 сделай todo")
+    await settle(orch)
+    answer = next(m for m in messages(events) if m.sender == "architect" and "постоянный id" in m.content)
+    assert answer.to == ["coder1"] and orch.agents["coder1"].turns == 2
+
+
+async def test_plain_reply_without_question_is_not_redirected(team):
+    orch, events, _ = team({"coder1": ["@architect сделал часть 1", "ок"], "architect": ["Принято."]})
+    orch.route("architect", "@coder1 сделай")
+    await settle(orch)
+    assert next(m for m in messages(events) if m.content == "Принято.").to == []
 
 
 def test_approved_detection():

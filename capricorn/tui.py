@@ -1685,16 +1685,17 @@ class CapricornApp(App):
         self.refresh_git()
 
     def merge_done(self, finished: bool):
-        """Пользователь завершил или отменил слияние в окне Git — сказать менеджеру, если сливал он."""
+        """Пользователь завершил или отменил слияние в окне Git — сказать тому, кто ведёт работу (техлиду)."""
         agent, self.merging = self.merging, ""
         if not agent:
             return
         if finished:
-            self.orch.notify("manager", f"пользователь завершил слияние capricorn/{agent}: конфликты разрешены, "
-                                        "работа влита. Можно вливать следующие ветки.")
+            self.orch.notify(self.orch.lead, f"пользователь завершил слияние capricorn/{agent}: конфликты "
+                                             "разрешены, работа влита. Можно продолжать.")
         else:
-            self.orch.notify("manager", f"пользователь отменил слияние capricorn/{agent}. Попроси @{agent} "
-                                        "выполнить sync_branch и разрешить конфликты у себя, потом влей снова.")
+            self.orch.notify(self.orch.lead, f"пользователь отменил слияние capricorn/{agent}. Попроси @{agent} "
+                                             "выполнить sync_branch, разрешить конфликты у себя и снова отдать "
+                                             "на ревью.")
 
     @work(group="git")
     async def switch_branch(self, branch: str):
