@@ -66,7 +66,7 @@ HELP = """\
   /pause /resume /stop          — пауза, продолжить, прервать всех
   /continue [N]                 — добавить N ходов (по умолч. 15)
   /complex on|off               — третий кодер
-  /team                         — состав команды: роли, типы, описания, скиллы
+  /team  (alt+t)                — окно состава: добавить, убрать, изменить роль, скиллы;  /team list — текстом
   /off <агент>  /on <агент>     — выключить роль на текущую задачу (до /new) и вернуть
   /model <агент> <пров/модель>  — сменить модель на лету;  /models — список
   /retry <агент>  /reset [агент] — повтор после ошибки, очистка памяти
@@ -85,7 +85,7 @@ HELP = """\
   alt+1..9, alt+стрелки — выбрать панель     alt+space (или alt+o) — открыть её окно
   в окне агента — личный разговор; esc закрывает окно, итог уходит команде
   alt+g — полноэкранный Git (ветки, коммиты, конфликты)   alt+d — diff ветки агента   alt+z — развернуть панель, esc — свернуть
-  alt+p пауза · alt+s стоп · alt+b ветки · alt+w worktree · alt+n новая сессия · alt+e экспорт · alt+h справка
+  alt+t команда · alt+p пауза · alt+s стоп · alt+b ветки · alt+w worktree · alt+n новая сессия · alt+e экспорт · alt+h справка
   (F5/F8/ctrl+b тоже работают; если терминал перехватывает alt+space — жми alt+o)"""
 
 
@@ -1309,6 +1309,7 @@ class CapricornApp(App):
         Binding("alt+n", "slash('/new')", show=False, priority=True),
         Binding("alt+e", "slash('/export')", show=False, priority=True),
         Binding("alt+h", "slash('/help')", show=False, priority=True),
+        Binding("alt+t", "open_team", show=False, priority=True),
         Binding("f5", "toggle_pause", "Пауза"),
         Binding("f8", "stop", "Стоп"),
         Binding("ctrl+b", "branches", "Ветки"),
@@ -1605,7 +1606,10 @@ class CapricornApp(App):
             self.feed.system(f"{title_of(self.cfg, name)} ({name}) " +
                              ("выключен на эту задачу — /on вернёт" if cmd == "off" else "снова в команде"))
         elif cmd == "team":
-            self.feed.system(self.team_summary())
+            if args and args[0].lower() == "list":
+                self.feed.system(self.team_summary())
+            else:
+                self.action_open_team()
         elif cmd == "model":
             name = self._agent(args[0]); o.set_model(name, args[1])
             self.panels[name].set_meta(model=args[1]); self.feed.system(f"{name} → {args[1]}")
@@ -1841,6 +1845,13 @@ class CapricornApp(App):
             self.zoom("feed")
         else:
             self.open_focus(self.selected)
+
+    def action_open_team(self):
+        from .team_ui import TeamScreen
+        if isinstance(self.screen, TeamScreen):
+            self.screen.action_close()
+        elif not isinstance(self.screen, OVERLAYS) and self.screen is self.screen_stack[0]:
+            self.push_screen(TeamScreen())
 
     def action_open_git(self):
         if isinstance(self.screen, (GitScreen, ConflictScreen, AgentDiffScreen)):

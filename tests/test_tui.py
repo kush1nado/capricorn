@@ -786,7 +786,7 @@ async def test_off_and_on_commands(ui_team):
 
 async def test_team_command_lists_roles(ui_team):
     app, pilot = ui_team
-    await submit(pilot, "/team")
+    await submit(pilot, "/team list")
     text = next(t for t in feed_texts(app) if "team.yaml" in t)
     assert "security" in text and "reviewer" in text and "ищет дыры" in text and "не в составе" in text
     from capricorn.tui import HELP

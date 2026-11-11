@@ -192,6 +192,13 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   прогоне молча бы ничего не делал. Заглушка `--mock` играет роль по модели (`mock/architect`), а не по имени.
 - Смена состава на лету — `Orchestrator.set_team` (только когда никто не делает ход); TUI пересобирает панели
   `rebuild_panels`. Сетка — 3 колонки, строк сколько нужно, лента добирает последнюю строку.
+- Окно `/team` (`capricorn/team_ui.py`): правки копятся в копии `roles`, `s` → `orch.set_team` + `save_team` +
+  `rebuild_panels`; `/off` из окна (`o`) действует сразу. Модальные окна импортируют `ConfirmModal`/`InputModal`
+  из tui лениво (внутри метода), иначе круговой импорт.
+- **Input в Textual 8 по умолчанию выделяет весь текст при фокусе** (`select_on_focus=True`): первая же клавиша
+  стирает поле. В формах редактирования ставь `select_on_focus=False`.
+- Тест окна: `wait_for(isinstance(app.screen, X))` срабатывает до монтирования детей — жди и сам виджет
+  (`app.screen.query("#id")`). В веб-режиме на Windows клавиши доходят с задержкой — скриншот делай через 2–3 с.
 
 ## Режимы --web / --desktop и сборка
 
