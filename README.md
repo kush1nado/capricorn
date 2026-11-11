@@ -326,6 +326,8 @@ git config core.hooksPath .githooks             # pre-commit: версия + т�
 ```
 
 Правила работы — в [CLAUDE.md](CLAUDE.md), типовые сценарии — в [.claude/SKILLS.md](.claude/SKILLS.md).
+Сайт-визитка — [docs/site/index.html](docs/site/index.html) (открывается из файла, без сервера и CDN); его,
+как и `/undo-merge`, написала сама команда Capricorn в живом прогоне.
 Тесты не ходят в сеть: HTTP-провайдеры проверяются через `httpx.MockTransport`, агенты — через
 скриптованный провайдер, интерфейс — через Textual Pilot.
 

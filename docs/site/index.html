@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Capricorn — мультиагентная среда разработки в терминале. Команда агентов, отдельные worktrees и сохранение сессий.">
+  <title>Capricorn — команда агентов в терминале</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#about">К содержимому</a>
+  <header class="container">
+    <a class="brand" href="#about">CAPRICORN<span aria-hidden="true">_</span></a>
+    <nav aria-label="Разделы сайта">
+      <a href="#about">О проекте</a>
+      <a href="#team">Команда</a>
+      <a href="#features">Возможности</a>
+      <a href="#install">Установка</a>
+      <a href="#hotkeys">Клавиши</a>
+    </nav>
+  </header>
+  <main class="container">
+    <section id="about" class="hero" aria-labelledby="about-title">
+      <p class="eyebrow">Мультиагентная среда разработки в терминале</p>
+      <h1 id="about-title">Capricorn</h1>
+      <p class="lead">Команда агентов на одном экране.</p>
+      <p>Киберпанк-терминал в красно-чёрной палитре. Архитектор, менеджер, 2–3 кодера, ревьюер и тестировщик работают рядом с git-панелью и общей лентой.</p>
+      <p>Агенты передают друг другу ход через <code>@упоминания</code>, спорят и критикуют. Ты можешь вмешаться в любой момент из строки ввода.</p>
+      <p>Каждому агенту — своя модель. Claude, OpenAI, DeepSeek, Qwen, MiniMax, OpenRouter, Ollama, LM Studio.</p>
+      <a class="button" href="#install">Установить и запустить <span aria-hidden="true">↗</span></a>
+    </section>
+    <section id="team" aria-labelledby="team-title">
+      <h2 id="team-title">Команда агентов</h2>
+      <div class="grid team">
+        <article class="card"><h3>@architect</h3><p>Архитектор. С ним можно отдельно обсудить архитектуру. Может читать файлы и проверять чужую работу в worktree.</p></article>
+        <article class="card"><h3>@manager</h3><p>Менеджер распределяет работу и ставит задачи кодерам. После APPROVED вливает ветку агента. При споре спрашивает тебя с вариантами A/B.</p></article>
+        <article class="card"><h3>@coder1</h3><p>Кодер. Читает и изменяет файлы, запускает тесты. Работает в собственной ветке и отдельном git worktree.</p></article>
+        <article class="card"><h3>@coder2</h3><p>Кодер. Читает и изменяет файлы, запускает тесты. Параллельные правки в отдельных worktrees не мешают друг другу.</p></article>
+        <article class="card"><h3>@coder3</h3><p>Третий кодер подключается через <code>--complex</code> или <code>/complex on</code>. Как и другие кодеры, может изменять файлы и запускать тесты.</p></article>
+        <article class="card"><h3>@reviewer</h3><p>Ревьюер сверяет код с требованиями. Может смотреть чужие файлы и diff, запускать тесты в worktree агента.</p></article>
+        <article class="card"><h3>@tester</h3><p>Тестировщик может создавать и изменять файлы, запускать тесты. Работает в собственной ветке и отдельном worktree.</p></article>
+      </div>
+    </section>
+    <section id="features" aria-labelledby="features-title">
+      <h2 id="features-title">Главные возможности</h2>
+      <div class="grid">
+        <article class="card"><h3>Три режима</h3><p>Один интерфейс в терминале (<code>capricorn</code>), браузере (<code>--web</code>) и собственном окне (<code>--desktop</code>). Веб-сервер слушает только <code>127.0.0.1</code>.</p></article>
+        <article class="card"><h3>Отдельные worktrees</h3><p>У каждого кодера и тестировщика своя ветка <code>capricorn/&lt;агент&gt;</code>. Ревьюер проверяет работу до слияния, менеджер вливает её после APPROVED.</p></article>
+        <article class="card"><h3>Codex CLI и Claude Code CLI</h3><p>Агенты могут работать через установленный CLI под подпиской ChatGPT или Claude, в пределах её лимитов. У каждого агента своя сессия CLI и свои инструменты.</p></article>
+        <article class="card"><h3>Сессии по проектам</h3><p>Лента, история, очереди, токены, бюджет и модели автоматически сохраняются после каждого хода. <code>capricorn --resume</code> продолжает сессию, <code>/export</code> сохраняет переписку в Markdown.</p></article>
+      </div>
+    </section>
+    <section id="install" aria-labelledby="install-title">
+      <h2 id="install-title">Установить и запустить</h2>
+      <p>Windows, Linux и macOS. Для установки из исходников нужен Python ≥ 3.10. В корне проекта создай окружение.</p>
+      <pre><code>python -m venv .venv</code></pre>
+      <table>
+        <caption>Установка через Python и запуск по ОС</caption>
+        <thead><tr><th scope="col">ОС</th><th scope="col">Установка</th><th scope="col">Запуск</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Windows</th><td><code>.venv\Scripts\python -m pip install -e .</code></td><td>Двойной клик по <code>Capricorn.cmd</code> или <code>.venv\Scripts\capricorn</code></td></tr>
+          <tr><th scope="row">Linux, macOS</th><td><code>.venv/bin/python -m pip install -e .</code></td><td><code>.venv/bin/capricorn</code> или <code>source .venv/bin/activate</code>, затем <code>capricorn</code></td></tr>
+        </tbody>
+      </table>
+      <p>Для собственного окна установи дополнение <code>pip install -e ".[desktop]"</code>. На Linux нужен GTK (<code>sudo apt install python3-gi gir1.2-webkit2-4.1</code>) или Qt.</p>
+      <h3>Готовое приложение</h3>
+      <p>Скачай архив для своей ОС на странице <a href="https://github.com/kush1nado/capricorn/releases">Releases</a>, распакуй и запусти.</p>
+      <ul><li>Windows — <code>Capricorn-Windows.zip</code></li><li>macOS — <code>Capricorn-macOS.tar.gz</code></li><li>Linux — <code>Capricorn-Linux.tar.gz</code></li></ul>
+      <p>На стартовом экране выбери проект, модели агентов и новую или последнюю сессию. Нажми Enter для запуска.</p>
+      <p>В стандартном Terminal.app на macOS тема использует 256-цветную палитру. В iTerm2, Ghostty, WezTerm и Kitty доступна полная палитра.</p>
+    </section>
+    <section id="hotkeys" aria-labelledby="hotkeys-title">
+      <h2 id="hotkeys-title">Горячие клавиши</h2>
+      <table>
+        <caption>Управление через Alt</caption>
+        <thead><tr><th scope="col">Клавиши</th><th scope="col">Действие</th></tr></thead>
+        <tbody>
+          <tr><td><kbd>Alt+1..9</kbd>, <kbd>Alt+←→↑↓</kbd></td><td>Выбрать панель, выделенную рамкой</td></tr>
+          <tr><td><kbd>Alt+Space</kbd> или <kbd>Alt+O</kbd></td><td>Открыть окно выбранной панели, в окне — закрыть его</td></tr>
+          <tr><td><kbd>Alt+G</kbd></td><td>Полноэкранный Git</td></tr>
+          <tr><td><kbd>Alt+D</kbd></td><td>Diff ветки выбранного кодера или тестировщика до слияния</td></tr>
+          <tr><td><kbd>Alt+Z</kbd></td><td>Развернуть выбранную панель, Esc — свернуть</td></tr>
+          <tr><td><kbd>Alt+P</kbd> / <kbd>Alt+S</kbd></td><td>Пауза ↔ продолжить / остановить всех, также F5 / F8</td></tr>
+          <tr><td><kbd>Alt+B</kbd></td><td>Выбор ветки, также Ctrl+B</td></tr>
+          <tr><td><kbd>Alt+W</kbd> / <kbd>Alt+N</kbd> / <kbd>Alt+E</kbd> / <kbd>Alt+H</kbd></td><td>Worktree / новая сессия / экспорт / справка</td></tr>
+        </tbody>
+      </table>
+      <p>Windows может перехватывать Alt+Space в классической консоли. В этом случае используй Alt+O.</p>
+    </section>
+  </main>
+  <footer class="container"><p>CAPRICORN · <a href="../../README.md">Документация проекта</a></p></footer>
+</body>
+</html>
