@@ -43,7 +43,8 @@ THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
 # модели копируют формат входящих «[от X → Y]:» (иногда в **жирном**) в начало своего ответа
 ECHO_RE = re.compile(r"\A\s*(?:\*\*)?\[от [^\]\n]*\]:?(?:\*\*)?:?\s*")
 DIRECTIVE_RE = re.compile(r"^[ \t]*(MERGE[ \t]+(\w+)|SYNC)[ \t]*$", re.M)
-BRANCH_NOTE_FILES = 15            # сколько изменённых файлов перечислять в пометке о ветке
+APPROVED_RE = re.compile(r"^[ \t*_#>]*APPROVED\b", re.M)       # строка-вердикт ревьюера
+BRANCH_NOTE_FILES = 15           # сколько изменённых файлов перечислять в пометке о ветке
 USER_TASKS_SHOWN = 3              # сколько последних непрочитанных реплик пользователя показать агенту
 
 
@@ -428,6 +429,8 @@ class Orchestrator:
         to = self.parse_targets(sender, text)
         if sender == USER and not to:
             to = [self.cfg.default_target]
+        elif sender == "reviewer" and not to and APPROVED_RE.search(CODE_RE.sub("", text)) and "manager" in self.roster:
+            to = ["manager"]      # одобрение без @manager — иначе цепочка обрывается до слияния (живой прогон)
         msg = Message(id=msg_id or next(self.ids), sender=sender, to=to, content=text)
         self.messages.append(msg)
         self._log(msg)

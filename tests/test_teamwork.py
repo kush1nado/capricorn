@@ -118,3 +118,21 @@ def test_manager_does_not_relay_direct_messages():
     """Живой прогон 3: менеджер пересказал кодеру замечания ревьюера — лишний ход после одобрения."""
     mgr = prompt("manager").lower()
     assert "не пересказывай" in mgr and "один раз" in mgr
+
+
+async def test_approved_without_mention_still_reaches_manager(team):
+    """Живой прогон 4: ревьюер написал APPROVED без @manager — менеджер не проснулся, слияния не было."""
+    orch, events, _ = team({"reviewer": ["Проверяю ветку.\n\n**APPROVED**\n\nВсё хорошо."], "manager": ["ок"]})
+    orch.route("coder1", "@reviewer готово")
+    await settle(orch)
+    msg = next(m for m in messages(events) if m.sender == "reviewer")
+    assert msg.to == ["manager"]
+    assert orch.agents["manager"].turns == 1
+
+
+def test_approved_detection():
+    from capricorn.orchestrator import APPROVED_RE
+    assert APPROVED_RE.search("Проверяю.\n\n**APPROVED**")
+    assert APPROVED_RE.search("APPROVED, замечаний нет")
+    assert not APPROVED_RE.search("Пока не APPROVED: нет тестов")
+    assert not APPROVED_RE.search("NOT APPROVED")
