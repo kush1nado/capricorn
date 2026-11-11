@@ -64,6 +64,7 @@ HELP = """\
   /tools                        — инструменты агентов (чтение/запись файлов, diff, тесты)
   /worktrees \\[prune]           — ветки кодеров; prune — убрать уже влитые
   /merge <агент>                — влить ветку агента в текущую (то же, что merge_work у менеджера)
+  /undo-merge <агент>           — откатить последнее слияние ветки (revert)
   /diff <агент>                 — что агент наменял в своей ветке, до слияния (или alt+d на его панели)
   /usage                        — ходы, токены и стоимость по агентам за сессию
   /sessions  /session <id|last>  /new  /export [файл] — сессии проекта
@@ -1550,6 +1551,8 @@ class CapricornApp(App):
             self.show_worktrees(args[0].lower() if args else "")
         elif cmd == "merge":
             self.merge_work(self._agent(args[0]))
+        elif cmd == "undo-merge":
+            self.undo_merge_work(self._agent(args[0]))
         elif cmd == "usage":
             self.feed.system(usage_report(self.orch))
         elif cmd == "diff":
@@ -1645,6 +1648,22 @@ class CapricornApp(App):
             return
         try:
             res = await wts.merge(agent)
+            self.feed.system(("► " if res.ok else "▲ ") + res.text, "info" if res.ok else "error")
+        except Exception as e:  # noqa: BLE001
+            self.feed.system(f"▲ {e}", "error")
+        self.refresh_git()
+
+    def undo_merge_work(self, agent: str):
+        if not self.orch.toolbox.worktrees.active:
+            self.feed.system("worktree выключены — откатывать нечего")
+            return
+        self.push_screen(ConfirmModal(f"Откатить последнее слияние capricorn/{agent}?"),
+                         lambda confirmed: self.perform_undo_merge(agent) if confirmed else None)
+
+    @work(group="git")
+    async def perform_undo_merge(self, agent: str):
+        try:
+            res = await self.orch.toolbox.worktrees.undo_merge(agent)
             self.feed.system(("► " if res.ok else "▲ ") + res.text, "info" if res.ok else "error")
         except Exception as e:  # noqa: BLE001
             self.feed.system(f"▲ {e}", "error")

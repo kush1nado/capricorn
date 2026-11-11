@@ -192,6 +192,28 @@ async def test_merge_command(ui_git):
     await wait_for(pilot, lambda: any("нет агента" in t for t in feed_texts(app)))
 
 
+async def test_undo_merge_command_confirmation(ui_git):
+    from capricorn.tui import ConfirmModal
+
+    app, pilot = ui_git
+    await app.orch.toolbox.run("coder1", "write_file", {"path": "m.py", "content": "m"})
+    await submit(pilot, "/merge coder1")
+    await wait_for(pilot, lambda: any("влита" in t for t in feed_texts(app)))
+    path = app.orch.toolbox.root / "m.py"
+    await submit(pilot, "/undo-merge coder1")
+    assert isinstance(app.screen, ConfirmModal)
+    assert path.exists()
+    await pilot.press("n")
+    assert path.exists()
+    await submit(pilot, "/undo-merge coder1")
+    assert isinstance(app.screen, ConfirmModal)
+    await pilot.press("y")
+    await wait_for(pilot, lambda: any("откачено" in t for t in feed_texts(app)))
+    assert not path.exists()
+    await submit(pilot, "/undo-merge nobody")
+    assert any("нет агента" in t for t in feed_texts(app))
+
+
 async def test_session_commands(ui, tmp_path):
     app, pilot = ui
     o = app.orch

@@ -42,6 +42,73 @@ def status(repo) -> str:
 
 # ---------------------------------------------------------------- включение
 
+async def test_undo_merge_success(box, repo):
+    await ok(box, "coder1", "edit_file", path="app.py", old="return 1", new="return 2")
+    await ok(box, "manager", "merge_work", agent="coder1")
+    merge = git(repo, "rev-parse", "HEAD")
+    result = await box.worktrees.undo_merge("coder1")
+    assert result.ok, result.text
+    assert "откачено" in result.text
+    assert "return 1" in (repo / "app.py").read_text(encoding="utf-8")
+    assert git(repo, "rev-parse", "HEAD^") == merge
+    assert git(repo, "show", "-s", "--format=%an") == "Capricorn manager"
+    assert status(repo) == ""
+
+
+async def test_undo_merge_missing(box, repo):
+    head = git(repo, "rev-parse", "HEAD")
+    result = await box.worktrees.undo_merge("coder1")
+    assert not result.ok and "нет слияния capricorn/coder1" in result.text
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert status(repo) == ""
+
+
+async def test_undo_merge_conflict_is_aborted(box, repo):
+    await ok(box, "coder1", "edit_file", path="app.py", old="return 1", new="return 2")
+    await ok(box, "manager", "merge_work", agent="coder1")
+    (repo / "app.py").write_text("def f():\n    return 3\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "later change")
+    head = git(repo, "rev-parse", "HEAD")
+    result = await box.worktrees.undo_merge("coder1")
+    assert not result.ok and "откат дал конфликт" in result.text
+    assert "app.py" in result.text
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert status(repo) == ""
+    assert not (repo / ".git" / "REVERT_HEAD").exists()
+    assert not (repo / ".git" / "sequencer").exists()
+    assert "return 3" in (repo / "app.py").read_text(encoding="utf-8")
+
+
+async def test_undo_merge_preserves_staged_changes(box, repo):
+    await ok(box, "coder1", "write_file", path="new.py", content="new")
+    await ok(box, "manager", "merge_work", agent="coder1")
+    (repo / "draft.py").write_text("draft", encoding="utf-8")
+    git(repo, "add", "draft.py")
+    before = status(repo)
+    result = await box.worktrees.undo_merge("coder1")
+    assert not result.ok and "незакоммиченные" in result.text
+    assert status(repo) == before
+    assert (repo / "new.py").exists()
+
+
+async def test_undo_merge_commit_failure_cleans_changes(box, repo, monkeypatch):
+    await ok(box, "coder1", "write_file", path="new.py", content="new")
+    await ok(box, "manager", "merge_work", agent="coder1")
+    head = git(repo, "rev-parse", "HEAD")
+    original = box.worktrees._git
+
+    async def fail_commit(cwd, *args, **kwargs):
+        if "commit" in args:
+            return 1, "commit failed"
+        return await original(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(box.worktrees, "_git", fail_commit)
+    result = await box.worktrees.undo_merge("coder1")
+    assert not result.ok and "commit failed" in result.text
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert status(repo) == ""
+    assert (repo / "new.py").exists()
+
 def test_active_only_for_git_repo_with_commits(tmp_path, repo):
     assert Worktrees(repo, load_config()).active
     plain = tmp_path / "plain"

@@ -206,6 +206,44 @@ class Worktrees:
         return Outcome(False, f"конфликты в файлах: {', '.join(files)}. Исправь их (убери маркеры <<<<<<< ======= >>>>>>>) "
                               f"и снова вызови sync_branch.")
 
+    async def undo_merge(self, agent: str) -> Outcome:
+        """Откатить последнее слияние агента отдельным revert-коммитом."""
+        await self.main_branch()
+        code, out = await self._git(self.repo, "log", f"--grep=^Merge {self.branch(agent)}:",
+                                    "--merges", "--format=%H", "-1")
+        if code != 0:
+            return Outcome(False, f"не удалось найти слияние: {out[:400]}")
+        commit = out.strip()
+        if not commit:
+            return Outcome(False, f"нет слияния {self.branch(agent)} в текущей ветке")
+        code, out = await run("git", "status", "--porcelain", cwd=str(self.repo), stderr=False)
+        if code != 0 or out.strip():
+            return Outcome(False, "перед откатом сохрани или убери незакоммиченные изменения")
+        for ref in ("MERGE_HEAD", "REVERT_HEAD", "CHERRY_PICK_HEAD"):
+            code, _ = await self._git(self.repo, "rev-parse", "-q", "--verify", ref)
+            if code == 0:
+                return Outcome(False, "перед откатом заверши текущую операцию Git")
+        code, out = await self._git(self.repo, *identity("manager"), "revert", "-m", "1",
+                                    "--no-edit", "--no-commit", commit)
+        if code != 0:
+            _, conflicts = await self._git(self.repo, "diff", "--name-only", "--diff-filter=U")
+            abort_code, abort_out = await self._git(self.repo, "revert", "--abort")
+            if abort_code != 0:
+                return Outcome(False, f"откат не удался: {out[:400]}. Отмена отката: {abort_out[:400]}")
+            if conflicts.strip():
+                return Outcome(False, "откат дал конфликт, откат отменён. Файлы: "
+                               + ", ".join(conflicts.splitlines()))
+            return Outcome(False, f"откат не удался: {out[:400]}")
+        code, out = await self._git(self.repo, *identity("manager"), "commit", "--no-verify",
+                                    "--no-edit")
+        if code != 0:
+            cleanup_code, cleanup_out = await self._git(self.repo, "reset", "--merge", "HEAD")
+            if cleanup_code != 0:
+                return Outcome(False, f"не удалось создать коммит отката: {out[:400]}. "
+                               f"Не удалось убрать изменения отката: {cleanup_out[:400]}")
+        return Outcome(code == 0, f"слияние {self.branch(agent)} откачено" if code == 0
+                       else f"не удалось создать коммит отката: {out[:400]}")
+
     async def _unresolved(self, wt: Path) -> list[str]:
         _, out = await self._git(wt, "diff", "--name-only", "--diff-filter=U")
         left = []
