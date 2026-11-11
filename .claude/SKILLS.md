@@ -133,7 +133,7 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
 ## CLI-провайдеры (Codex, Claude Code)
 
 - `capricorn/cli_providers.py`, `native_tools = True`: наши инструменты им не передаются. Оркестратор передаёт
-  `workspace={"path", "write", "branch", "test_command", "worktrees_dir"}` (`Orchestrator.native_workspace`).
+  `workspace={"path", "write", "branch", "test_command", "worktrees_dir", "host_tests", "tmp"}` (`Orchestrator.native_workspace`).
 - Codex: `codex exec --json -C <папка> -s read-only|workspace-write [resume <id>] -`, промпт идёт через stdin.
   Флаги ставятся **до** `resume`, после него `-C` не принимается. На Windows CLI лежит в
   `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`, а рядом должен быть `codex-code-mode-host.exe`: копия
@@ -167,6 +167,12 @@ GIT_AUTHOR_NAME="$(git log -1 --format=%an)" GIT_AUTHOR_EMAIL="$(git log -1 --fo
   ведёт архитектор (`Orchestrator.lead`). APPROVED ревьюера → `merge_approved` вливает ветку последнего
   пишущего агента, писавшего ревьюеру, и шлёт результат техлиду. Ответ без @ на вопрос («?» в батче) уходит
   спросившему (`askers`, параметр `reply_to` у `route`). Замер на трёх задачах: без этого команда вставала.
+  Повторное APPROVED, когда вливать нечего и техлид уже знает о слиянии, его не будит (`Outcome.empty`,
+  `_merged_since_review`).
+- Где уходят токены CLI-агентов: каждый шаг агента внутри хода (чтение файла, запуск тестов) — отдельный запрос
+  к API с полным контекстом, кэш суммируется. Постоянный процесс CLI токенов почти не экономит, только время.
+  Экономия — меньше ходов и шагов: тестировщик только на больших задачах, замечания ревью одним списком
+  и правка одним заходом, полный прогон тестов перед ревью делает система (`host_tests` → `HOST_TESTS_HINT`).
 - Прогон на клоне самого Capricorn (`git clone` во `%TEMP%`): `python -m pytest` в worktree импортирует код
   клона, а не редактируемую установку. Git в песочнице Codex не читает `~/.config/git/ignore` и пишет
   предупреждения — git-тесты падают; агент обходит это своей `XDG_CONFIG_HOME`.

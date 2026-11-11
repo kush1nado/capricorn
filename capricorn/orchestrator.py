@@ -497,7 +497,19 @@ class Orchestrator:
             res = Outcome(False, f"{type(e).__name__}: {e}")
         self.emit("system", text=("» " if res.ok else "▲ ") + f"MERGE: {res.text}",
                   level="info" if res.ok else "error")
+        if res.empty and self._merged_since_review(writer):
+            return                  # повторное APPROVED: архитектор уже знает, будить его незачем
         self.notify(self.lead, f"APPROVED → {res.text}")
+
+    def _merged_since_review(self, writer: str) -> bool:
+        """Сообщали ли техлиду о слиянии ветки writer после его последней отдачи на ревью."""
+        branch = self.toolbox.worktrees.branch(writer)
+        for m in reversed(self.messages):
+            if m.sender == writer and "reviewer" in m.to:
+                return False
+            if m.sender == "git" and f"{branch} влита" in m.content:
+                return True
+        return False
 
     def user_tasks(self) -> list[Message]:
         return [m for m in self.messages if m.sender == USER and m.kind == "team"]
@@ -629,6 +641,7 @@ class Orchestrator:
         provider = self.provider_for(agent)
         out = {"path": str(ws.root), "write": write, "test_command": tc.test_command,
                "shell": write or getattr(provider, "readonly_shell", False),
+               "host_tests": write and wts.active and tc.run_tests,     # test_summary к ревью
                "branch": wts.branch(agent) if ws.label else "",
                "worktrees_dir": str(Path(".git") / "capricorn" / "worktrees") if wts.active else ""}
         if write and wts.active:

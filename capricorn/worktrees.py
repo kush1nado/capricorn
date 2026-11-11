@@ -33,6 +33,7 @@ class Outcome:
     ok: bool
     text: str
     conflicts: list[str] = field(default_factory=list)
+    empty: bool = False          # слияние: новых коммитов нет, вливать было нечего
 
 
 class Worktrees:
@@ -163,7 +164,8 @@ class Worktrees:
         await self.commit_all(agent, f"{agent}: работа для слияния")
         code, ahead = await self._git(self.repo, "rev-list", "--count", f"{main}..{self.branch(agent)}")
         if code == 0 and ahead.strip() == "0":
-            return Outcome(True, f"в {self.branch(agent)} нет новых коммитов относительно {main} — сливать нечего")
+            return Outcome(True, f"в {self.branch(agent)} нет новых коммитов относительно {main} — сливать нечего",
+                           empty=True)
         code, out = await self._git(self.repo, *identity("manager"), "merge", "--no-ff", "--no-verify",
                                     "-m", f"Merge {self.branch(agent)}: работа {agent} (Capricorn)",
                                     self.branch(agent))

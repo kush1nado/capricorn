@@ -132,6 +132,52 @@ async def test_approved_merges_writer_branch_without_manager(team):
     assert orch.agents["coder1"].turns == 1, "APPROVED не будит кодера ответом на его «готово?»"
 
 
+async def test_repeat_approved_with_nothing_new_does_not_wake_architect(team):
+    """Замер 2: ревьюер второй раз написал APPROVED — «сливать нечего» будило архитектора впустую."""
+    orch, events, repo = team({"coder1": ["Готово, @reviewer"],
+                               "reviewer": ["APPROVED", "APPROVED, всё ещё ок"],
+                               "architect": ["@reviewer глянь ещё раз", "Принято."]})
+    await orch.toolbox.run("coder1", "write_file", {"path": "feature.py", "content": "ok\n"})
+    orch.route("architect", "@coder1 сделай фичу")
+    await settle(orch)
+    git_msgs = [m for m in messages(events) if m.sender == "git"]
+    assert len(git_msgs) == 1 and "влита" in git_msgs[0].content
+    assert orch.agents["architect"].turns == 1
+
+
+async def test_approved_with_nothing_to_merge_still_tells_architect_first_time(team):
+    """Если ветку ещё не вливали, а сливать нечего — архитектор должен узнать, иначе команда встанет."""
+    orch, events, _ = team({"reviewer": ["APPROVED"], "architect": ["ок"]})
+    await orch.toolbox.worktrees.ensure("coder1")
+    orch.route("coder1", "@reviewer готово")
+    await settle(orch)
+    git_msgs = [m for m in messages(events) if m.sender == "git"]
+    assert len(git_msgs) == 1 and "нечего" in git_msgs[0].content
+
+
+def test_prompts_cut_extra_rounds():
+    """Замер 2: тестировщик после слияния съел половину средней задачи; кодер правил ревью по частям."""
+    arch = prompt("architect").lower()
+    assert "тестировщика зови только" in arch and "больш" in arch
+    assert "без @" in arch, "замер 3: «Код от @coder1 влит» в отчёте разбудил кодера впустую"
+    assert "одним заходом" in prompt("coder1")
+    assert "одним списком" in prompt("reviewer")
+    ws = {"path": "/w", "write": True, "test_command": "pytest", "branch": "capricorn/coder1"}
+    assert "приложит результат" in prompt("coder1", native={**ws, "host_tests": True})
+    assert "приложит результат" not in prompt("coder1", native=ws)
+    api = system_prompt("coder1", ["coder1", "reviewer"], "ru", "", worktrees=True,
+                        tools=["read_file", "write_file", "run_tests", "sync_branch"])
+    assert "приложит результат" in api
+
+
+async def test_native_workspace_says_when_host_runs_tests(team):
+    orch, _, _ = team({})
+    assert (await orch.native_workspace("coder1"))["host_tests"] is True
+    orch.cfg.tools.run_tests = False
+    assert (await orch.native_workspace("coder1"))["host_tests"] is False
+    assert not (await orch.native_workspace("reviewer")).get("host_tests")
+
+
 async def test_approved_without_worktrees_goes_to_architect(tmp_path):
     from helpers import build_orch
     orch, events = build_orch(tmp_path, {"reviewer": ["APPROVED"], "architect": ["ок"]})
