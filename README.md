@@ -138,13 +138,13 @@ roles:
   coder1:    {}
   coder2:    {}
   security:                              # своя роль
-    kind: reviewer                       # architect | manager | coder | reviewer | tester | expert
+    kind: expert                         # architect | manager | coder | reviewer | tester | expert
     title: Безопасник
-    description: ищет дыры в безопасности   # видно всей команде в списке состава
+    description: ищет дыры в безопасности, зовут по делу   # видно всей команде в списке состава
     skills: [owasp]                      # .capricorn/skills/owasp.md — дописывается в промпт роли
     tools: [read_file, search, git_diff] # свой набор инструментов (иначе — по типу)
     # prompt: |                          # свой промпт вместо стандартного для типа
-  reviewer:  {}
+  reviewer:  {skills: [owasp]}           # или проще: скилл обычному ревьюеру, без отдельной роли
   tester:    {enabled: false}            # не в составе
 ```
 
