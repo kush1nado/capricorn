@@ -183,6 +183,9 @@ def adapt_mentions(text: str, role: str, roster: list[str], kind_of) -> str:
     def repl(m: re.Match) -> str:
         kind = m.group(1)
         names = [n for n in roster if kind_of(n) == kind]
+        others = [n for n in names if n != role]
+        if kind == "reviewer" and len(names) > 1 and others:     # работу проверяют все ревьюеры, не первый
+            return " ".join(f"@{n}" for n in others)
         who = names[0] if names else lead
         return f"@{USER if who in (role, '') else who}"
 

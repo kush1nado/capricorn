@@ -1,5 +1,6 @@
 """Настраиваемая команда: роли с типами в .capricorn/team.yaml, скиллы, свой промпт, /off и /on на задачу."""
 import asyncio
+import copy
 
 import pytest
 
@@ -198,6 +199,37 @@ async def test_merge_does_not_happen_until_second_reviewer_agrees(team_orch):
     await settle(orch)
     assert not [m for m in messages(events) if m.sender == "git"]
     assert not (repo / "f.py").exists()
+
+
+async def test_handoff_to_one_reviewer_reaches_all_reviewers(team_orch):
+    """Живой прогон: кодер отдал работу только @security, обычный ревьюер её не видел, а ветку влили."""
+    orch, events, repo = team_orch({"dev": ["Готово, @security"],
+                                    "security": ["APPROVED"], "reviewer": ["@dev нет тестов"], "lead": ["ок"]})
+    await orch.toolbox.run("dev", "write_file", {"path": "f.py", "content": "ok\n"})
+    orch.route("lead", "@dev сделай")
+    await settle(orch)
+    handoff = next(m for m in messages(events) if m.sender == "dev")
+    assert handoff.to == ["security", "reviewer"], "работу видят все ревьюеры в составе"
+    assert orch.agents["reviewer"].turns == 1
+    assert not (repo / "f.py").exists(), "без одобрения второго ревьюера не вливаем"
+
+
+async def test_handoff_skips_reviewer_off_for_task(team_orch):
+    orch, events, repo = team_orch({"dev": ["Готово, @security"], "security": ["APPROVED"], "lead": ["ок"]})
+    orch.set_off("reviewer", True)
+    await orch.toolbox.run("dev", "write_file", {"path": "f.py", "content": "ok\n"})
+    orch.route("lead", "@dev сделай")
+    await settle(orch)
+    assert next(m for m in messages(events) if m.sender == "dev").to == ["security"]
+    assert (repo / "f.py").exists()
+
+
+def test_coder_prompt_names_every_reviewer():
+    cfg = load_config()
+    cfg.agents["security"] = copy.deepcopy(cfg.agents["reviewer"])
+    cfg.agents["security"].kind = "reviewer"
+    sp = system_prompt("coder1", ["architect", "coder1", "security", "reviewer"], "ru", "", team=cfg)
+    assert "@security @reviewer" in sp, "@reviewer в стандартном промпте — это все ревьюеры, не первый"
 
 
 TEAM_NO_REVIEW = "roles:\n  architect: {}\n  coder1: {}\n"

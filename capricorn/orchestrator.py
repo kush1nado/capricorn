@@ -545,6 +545,9 @@ class Orchestrator:
             to = [self.default_target] if self.default_target in self.roster else []
         elif not to and reply_to:                 # ответ без @ на чужой вопрос — тому, кто спрашивал
             to = [n for n in reply_to if n in self.roster and n != sender]
+        if self.cfg.is_writer(sender) and any(self.cfg.kind_of(n) == "reviewer" for n in to):
+            # работу видят все ревьюеры в составе: иначе забытый ревьюер не проверит, а ветку вольют
+            to += [n for n in self.names_of("reviewer") if n not in to and n != sender]
         msg = Message(id=msg_id or next(self.ids), sender=sender, to=to, content=text)
         self.messages.append(msg)
         self._log(msg)
